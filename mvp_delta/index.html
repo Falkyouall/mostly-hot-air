@@ -1,0 +1,912 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Mostly Hot Air — Delta (Stream-Navigation)</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #b5d4e8;
+      color: #f0f0f0;
+      user-select: none;
+    }
+    canvas { display: block; }
+
+    #hud {
+      position: absolute;
+      top: 20px; left: 20px;
+      background: rgba(0,0,0,0.55);
+      padding: 12px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      line-height: 1.55;
+      min-width: 200px;
+    }
+    #hud .title {
+      font-weight: 700;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      opacity: 0.75;
+      margin-bottom: 6px;
+      font-size: 12px;
+    }
+    #hud .row { display: flex; justify-content: space-between; gap: 12px; }
+    #hud .label { opacity: 0.65; }
+
+    #minimap {
+      position: absolute;
+      top: 20px; right: 20px;
+      width: 320px; height: 320px;
+      background: rgba(15, 25, 40, 0.85);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    }
+    #minimap canvas { display: block; }
+    #minimap .label {
+      position: absolute;
+      top: 8px; left: 12px;
+      font-size: 11px;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      opacity: 0.7;
+      pointer-events: none;
+    }
+    #minimap .scale {
+      position: absolute;
+      bottom: 8px; right: 12px;
+      font-size: 10px;
+      opacity: 0.5;
+      pointer-events: none;
+    }
+
+    #prompt {
+      position: absolute;
+      bottom: 20px; left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.55);
+      padding: 10px 18px;
+      border-radius: 6px;
+      font-size: 12px;
+      letter-spacing: 0.03em;
+    }
+    #prompt kbd {
+      background: rgba(255,255,255,0.15);
+      padding: 2px 7px;
+      border-radius: 3px;
+      font-family: monospace;
+      margin: 0 2px;
+    }
+
+    #banner {
+      position: absolute;
+      top: 40%; left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 28px 48px;
+      border-radius: 10px;
+      font-size: 28px;
+      font-weight: 700;
+      display: none;
+      letter-spacing: 0.05em;
+      text-align: center;
+    }
+    #banner.show { display: block; }
+    #banner.win {
+      background: rgba(40, 140, 70, 0.92);
+      box-shadow: 0 0 40px rgba(40, 140, 70, 0.5);
+    }
+    #banner.fail {
+      background: rgba(180, 50, 50, 0.92);
+      box-shadow: 0 0 40px rgba(180, 50, 50, 0.5);
+    }
+    #banner .sub { font-size: 14px; font-weight: 400; opacity: 0.88; margin-top: 10px; }
+  </style>
+</head>
+<body>
+
+<div id="hud">
+  <div class="title">Mostly Hot Air — Delta</div>
+  <div class="row"><span class="label">Höhe</span><span id="altitude">– m</span></div>
+  <div class="row"><span class="label">Distanz zum Ziel</span><span id="distance">– m</span></div>
+  <div class="row"><span class="label">Drift-Geschw.</span><span id="speed">– m/s</span></div>
+  <div class="row"><span class="label">Brenner</span><span id="burner">aus</span></div>
+  <div class="row"><span class="label">Nudge</span><span id="nudge">–</span></div>
+</div>
+
+<div id="minimap">
+  <canvas id="mapCanvas" width="320" height="320"></canvas>
+  <div class="label">Wind-Karte</div>
+  <div class="scale" id="mapScale">±500 m</div>
+</div>
+
+<div id="prompt">
+  <kbd>Leertaste</kbd> Brenner · <kbd>A/D</kbd> oder <kbd>◀/▶</kbd> Bash-Nudge (Tastendruck!) · <kbd>R</kbd> Reset
+</div>
+
+<div id="banner">Ziel erreicht<div class="sub">R drücken für neuen Versuch</div></div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.158.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.158.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+  import * as THREE from 'three';
+  import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+
+  // ==========================================================
+  // CONFIG
+  // ==========================================================
+  const START_ALT       = 100;      // m — starting altitude
+  const GOAL_DISTANCE   = 800;      // m — goal lies east of start
+  const GOAL_RADIUS     = 50;       // m — landing window (in XZ plane)
+  const ACTIVE_RISE     = 14;       // m/s — net vertical speed under full burner
+  const PASSIVE_SINK    = 8;        // m/s — vertical speed while burner off
+  const BURNER_RAMP     = 0.2;      // s to reach full burner power
+  // Bash-Nudge (Unrailed-Stil): diskreter Stoß senkrecht zum Wind
+  const BASH_VELOCITY   = 22;       // m/s — lateral burst magnitude during bash
+  const BASH_DURATION   = 0.45;     // s — how long each bash applies thrust
+  const BASH_COOLDOWN   = 0.35;     // s — delay between bashes
+  // Height does NOT influence wind direction in Delta — altitude is purely for balloon-feel.
+
+  // Vector field — two superposed sine waves produce wavelike streams that cross
+  const BASE_EAST       = 14.0;     // m/s — always-east drift
+  const WAVE_K1         = 0.0055;   // spatial frequency (per m)
+  const WAVE_K2         = 0.011;
+  const AMP_VZ_1        = 10.0;
+  const AMP_VZ_2        = 5.0;
+  const AMP_VX_MOD      = 4.4;      // east-drift modulation across streams
+
+  // Altitude attenuation — wind weakens with height (no fuel cost for height, so
+  // this is the only "price" of flying high: slower progress east)
+  const ALT_FALLOFF     = 500;      // m — altitude at which wind drops to ~0
+
+  // Mountains — hand-placed to force route decisions between start and goal
+  // h = peak height, r = mean base radius, seed = deterministic noise offset for organic silhouette
+  const MOUNTAINS = [
+    { x: 280, z: -95,  h: 220, r: 55, seed: 1.3 },
+    { x: 280, z:  95,  h: 220, r: 55, seed: 2.7 },
+    { x: 480, z:   0,  h: 280, r: 75, seed: 4.1 },
+    { x: 640, z: -170, h: 190, r: 50, seed: 5.9 },
+    { x: 640, z:  170, h: 190, r: 50, seed: 7.2 },
+  ];
+
+  // Radial noise for organic mountain silhouette — used by visual, collision,
+  // wind deflection and terrain rendering (single source of truth).
+  function mountainR(m, angle) {
+    const mod = 1
+      + Math.sin(angle * 2 + m.seed)        * 0.17
+      + Math.sin(angle * 3.5 + m.seed * 1.7) * 0.10
+      + Math.sin(angle * 6 + m.seed * 2.3)   * 0.06;
+    return m.r * mod;
+  }
+
+  function baseField(x, z) {
+    const vx = BASE_EAST
+             + Math.cos(z * WAVE_K1)       * AMP_VX_MOD
+             + Math.cos(z * WAVE_K2 + 0.8) * (AMP_VX_MOD * 0.6);
+    const vz = Math.sin(x * WAVE_K1)       * AMP_VZ_1
+             + Math.sin(x * WAVE_K2 + 1.2) * AMP_VZ_2;
+    return { vx, vz };
+  }
+
+  function windAt(x, y, z) {
+    let { vx, vz } = baseField(x, z);
+
+    // Altitude attenuation on the base flow
+    const altAtt = Math.max(0, 1 - y / ALT_FALLOFF);
+    vx *= altAtt;
+    vz *= altAtt;
+
+    // Mountain deflection — each mountain's influence fades above its peak;
+    // footprint uses the same organic noise as visual/collision/terrain
+    for (const m of MOUNTAINS) {
+      const mAlt = Math.max(0, 1 - y / m.h);
+      if (mAlt <= 0) continue;
+
+      const dx = x - m.x, dz = z - m.z;
+      const r = Math.sqrt(dx * dx + dz * dz);
+      const angle = Math.atan2(dz, dx);
+      const effR = mountainR(m, angle);
+      const R = effR * 2.8;                      // influence radius
+      if (r > R || r < 0.5) continue;
+
+      const ux = dx / r, uz = dz / r;
+      const prox = Math.pow(1 - r / R, 1.3);
+      const weight = prox * mAlt;
+
+      const SWIRL = 18;
+      vx += -uz * SWIRL * weight;
+      vz +=  ux * SWIRL * weight;
+
+      if (r < effR * 1.5) {
+        const innerBlend = 1 - r / (effR * 1.5);
+        const PUSH = 14;
+        vx += ux * PUSH * innerBlend * mAlt;
+        vz += uz * PUSH * innerBlend * mAlt;
+      }
+    }
+
+    return { vx, vz };
+  }
+
+  // Organic-cone collision: y below h*(1 - r/effR) within noisy footprint
+  function mountainHit(x, y, z) {
+    for (const m of MOUNTAINS) {
+      const dx = x - m.x, dz = z - m.z;
+      const r = Math.sqrt(dx * dx + dz * dz);
+      const angle = Math.atan2(dz, dx);
+      const effR = mountainR(m, angle);
+      if (r > effR) continue;
+      const coneTop = m.h * (1 - r / effR);
+      if (y < coneTop) return m;
+    }
+    return null;
+  }
+
+  const BALLON_MODEL = 'hot_air_balloon_modern.glb';
+  const BALLON_TARGET_HEIGHT = 18;
+
+  // ==========================================================
+  // SCENE
+  // ==========================================================
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0xb5d4e8);
+  scene.fog = new THREE.Fog(0xcadcea, 800, 4500);
+
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 1, 6000);
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  document.body.appendChild(renderer.domElement);
+
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // Lighting — warm golden-hour feel
+  scene.add(new THREE.AmbientLight(0xcbd9e8, 0.55));
+  const sun = new THREE.DirectionalLight(0xfff1c4, 1.0);
+  sun.position.set(800, 1200, 400);
+  sun.castShadow = true;
+  sun.shadow.camera.left = -2000;
+  sun.shadow.camera.right = 2000;
+  sun.shadow.camera.top = 1500;
+  sun.shadow.camera.bottom = -1500;
+  sun.shadow.camera.near = 100;
+  sun.shadow.camera.far = 3500;
+  sun.shadow.mapSize.set(2048, 2048);
+  scene.add(sun);
+
+  // ==========================================================
+  // GROUND
+  // ==========================================================
+  const groundGeo = new THREE.PlaneGeometry(8000, 5000, 40, 25);
+  const gPos = groundGeo.attributes.position;
+  for (let i = 0; i < gPos.count; i++) {
+    const x = gPos.getX(i), z = gPos.getZ(i);
+    const h = Math.sin(x * 0.002) * 2 + Math.cos(z * 0.003) * 1.5 + Math.sin((x + z) * 0.001) * 3;
+    gPos.setY(i, h);
+  }
+  groundGeo.computeVertexNormals();
+  const ground = new THREE.Mesh(groundGeo, new THREE.MeshLambertMaterial({ color: 0x4a7c3a }));
+  ground.rotation.x = -Math.PI / 2;
+  ground.position.set(GOAL_DISTANCE / 2, 0, 0);
+  ground.receiveShadow = true;
+  scene.add(ground);
+
+  // Grid reference (100m squares)
+  const grid = new THREE.GridHelper(8000, 80, 0x2a4a2a, 0x3a5a3a);
+  grid.position.set(GOAL_DISTANCE / 2, 0.5, 0);
+  grid.material.opacity = 0.55;
+  grid.material.transparent = true;
+  scene.add(grid);
+
+  // Distance markers every 300m
+  for (let d = 300; d < GOAL_DISTANCE; d += 300) {
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.6, 0.6, 15),
+      new THREE.MeshLambertMaterial({ color: 0xffffff })
+    );
+    pole.position.set(d, 7.5, 0);
+    pole.castShadow = true;
+    scene.add(pole);
+
+    const top = new THREE.Mesh(
+      new THREE.SphereGeometry(2, 12, 8),
+      new THREE.MeshLambertMaterial({ color: 0xffaa33 })
+    );
+    top.position.set(d, 16, 0);
+    scene.add(top);
+  }
+
+  // Trees scattered (deterministic pseudo-random for repeatability)
+  function rand(seed) {
+    let s = seed;
+    return () => {
+      s = (s * 1103515245 + 12345) & 0x7fffffff;
+      return s / 0x7fffffff;
+    };
+  }
+  const treeRand = rand(42);
+  function makeTree(x, z) {
+    const g = new THREE.Group();
+    const trunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.6, 0.8, 4),
+      new THREE.MeshLambertMaterial({ color: 0x5a3a1a })
+    );
+    trunk.position.y = 2;
+    trunk.castShadow = true;
+    g.add(trunk);
+    const foliage = new THREE.Mesh(
+      new THREE.ConeGeometry(3, 7, 8),
+      new THREE.MeshLambertMaterial({ color: 0x2d5a2a })
+    );
+    foliage.position.y = 6;
+    foliage.castShadow = true;
+    g.add(foliage);
+    g.position.set(x, 0, z);
+    g.rotation.y = treeRand() * Math.PI * 2;
+    g.scale.setScalar(0.7 + treeRand() * 0.6);
+    return g;
+  }
+  for (let i = 0; i < 260; i++) {
+    const x = treeRand() * 3800 - 400;
+    const z = treeRand() * 3000 - 1500;
+    const distStart = Math.sqrt(x * x + z * z);
+    const distGoal = Math.sqrt((x - GOAL_DISTANCE) ** 2 + z * z);
+    if (distStart < 80 || distGoal < 80) continue;
+    // don't spawn trees inside a mountain footprint
+    let inMountain = false;
+    for (const m of MOUNTAINS) {
+      if (Math.hypot(x - m.x, z - m.z) < m.r + 3) { inMountain = true; break; }
+    }
+    if (!inMountain) scene.add(makeTree(x, z));
+  }
+
+  // Mountains — cones deformed with per-vertex radial noise for organic silhouette,
+  // colored by height (green → brown → snowy peak). Collision/wind/topography all
+  // share the same mountainR() footprint so visuals match gameplay.
+  function makeMountain(m) {
+    const radialSeg = 28, heightSeg = 12;
+    const geo = new THREE.ConeGeometry(m.r, m.h, radialSeg, heightSeg);
+    const pos = geo.attributes.position;
+    const colors = new Float32Array(pos.count * 3);
+    const low  = new THREE.Color(0x4e7038);
+    const mid  = new THREE.Color(0x7c5e3a);
+    const high = new THREE.Color(0xf0f0f2);
+
+    for (let i = 0; i < pos.count; i++) {
+      const x = pos.getX(i);
+      const y = pos.getY(i);
+      const z = pos.getZ(i);
+      const r = Math.sqrt(x * x + z * z);
+
+      if (r > 0.01) {
+        const angle = Math.atan2(z, x);
+        // Radial deformation — the full organic silhouette
+        const scale = mountainR(m, angle) / m.r;
+        pos.setX(i, x * scale);
+        pos.setZ(i, z * scale);
+        // Slope/height bumps — rockiness, strongest at mid-slope
+        const rFrac = r / m.r;          // 0 top .. 1 base
+        const slopeWeight = 4 * rFrac * (1 - rFrac);   // peaks at mid-slope
+        const bump = Math.sin(angle * 4 + m.seed * 3) * 2.2
+                   + Math.sin(angle * 7 - m.seed * 1.1) * 1.4
+                   + Math.sin(r * 0.09 + m.seed * 2.7) * 1.2;
+        pos.setY(i, y + bump * slopeWeight);
+      }
+
+      // Color by height (with slight noise on the color mix band)
+      const t = (y + m.h / 2) / m.h;
+      const bandShift = Math.sin((x + z) * 0.02 + m.seed) * 0.05;
+      const tShifted = Math.max(0, Math.min(1, t + bandShift));
+      const c = tShifted < 0.6
+        ? low.clone().lerp(mid, tShifted / 0.6)
+        : mid.clone().lerp(high, (tShifted - 0.6) / 0.4);
+      colors[i * 3]     = c.r;
+      colors[i * 3 + 1] = c.g;
+      colors[i * 3 + 2] = c.b;
+    }
+    geo.setAttribute('color', new THREE.BufferAttribute(colors, 3));
+    geo.computeVertexNormals();
+    const mat = new THREE.MeshLambertMaterial({ vertexColors: true, flatShading: true });
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.position.set(m.x, m.h / 2, m.z);
+    mesh.rotation.y = m.seed;
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    return mesh;
+  }
+  for (const m of MOUNTAINS) scene.add(makeMountain(m));
+
+  // Start & Goal flags
+  function makeFlag(color, h = 22) {
+    const g = new THREE.Group();
+    const pole = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.5, 0.5, h),
+      new THREE.MeshLambertMaterial({ color: 0x4a3a2a })
+    );
+    pole.position.y = h / 2;
+    pole.castShadow = true;
+    g.add(pole);
+    const flag = new THREE.Mesh(
+      new THREE.PlaneGeometry(8, 5),
+      new THREE.MeshLambertMaterial({ color, side: THREE.DoubleSide })
+    );
+    flag.position.set(4, h - 3, 0);
+    g.add(flag);
+    return g;
+  }
+  const startFlag = makeFlag(0x4caf50);
+  startFlag.position.set(0, 0, 0);
+  scene.add(startFlag);
+  const goalFlag = makeFlag(0xffd700, 28);
+  goalFlag.position.set(GOAL_DISTANCE, 0, 0);
+  scene.add(goalFlag);
+
+  // Landing-zone ring at goal
+  const goalRing = new THREE.Mesh(
+    new THREE.RingGeometry(GOAL_RADIUS - 1, GOAL_RADIUS, 48),
+    new THREE.MeshBasicMaterial({ color: 0xffd700, side: THREE.DoubleSide, transparent: true, opacity: 0.7 })
+  );
+  goalRing.rotation.x = -Math.PI / 2;
+  goalRing.position.set(GOAL_DISTANCE, 0.3, 0);
+  scene.add(goalRing);
+
+  // ==========================================================
+  // BALLOON
+  // ==========================================================
+  const balloon = new THREE.Group();
+  balloon.position.set(0, START_ALT, 0);
+  scene.add(balloon);
+
+  const loader = new GLTFLoader();
+  loader.load(`./models/${BALLON_MODEL}`, (gltf) => {
+    const m = gltf.scene;
+    // normalize to target height
+    const box = new THREE.Box3().setFromObject(m);
+    const size = box.getSize(new THREE.Vector3());
+    const scale = BALLON_TARGET_HEIGHT / size.y;
+    m.scale.setScalar(scale);
+    box.setFromObject(m);
+    m.position.y -= box.min.y; // lift so basket bottom sits at group origin
+    m.traverse(o => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = false; } });
+    balloon.add(m);
+  });
+
+  // Soft shadow on the ground below balloon
+  const balloonShadow = new THREE.Mesh(
+    new THREE.CircleGeometry(8, 24),
+    new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.28 })
+  );
+  balloonShadow.rotation.x = -Math.PI / 2;
+  balloonShadow.position.y = 0.4;
+  scene.add(balloonShadow);
+
+  // ==========================================================
+  // STATE
+  // ==========================================================
+  const state = {
+    pos: new THREE.Vector3(0, START_ALT, 0),
+    vel: new THREE.Vector3(0, 0, 0),
+    burner: false,
+    burnerPower: 0,          // 0..1, smoothed
+    bashActive: 0,           // s remaining of active bash thrust
+    bashCooldown: 0,         // s remaining until next bash allowed
+    bashDir: 0,              // +1 left, -1 right, 0 none
+    finished: null,          // null | 'won' | 'crashed'
+  };
+
+  function resetRun() {
+    state.pos.set(0, START_ALT, 0);
+    state.vel.set(0, 0, 0);
+    state.burnerPower = 0;
+    state.bashActive = 0;
+    state.bashCooldown = 0;
+    state.bashDir = 0;
+    state.finished = null;
+    const b = document.getElementById('banner');
+    b.classList.remove('show', 'win', 'fail');
+  }
+
+  function tryBash(dir) {
+    if (state.finished) return;
+    if (state.bashActive > 0 || state.bashCooldown > 0) return;
+    state.bashActive = BASH_DURATION;
+    state.bashDir = dir;
+  }
+
+  // ==========================================================
+  // INPUT
+  // ==========================================================
+  document.addEventListener('keydown', (e) => {
+    if (e.repeat) return;  // only trigger bash on initial press, not auto-repeat
+    if (e.code === 'Space')                                 { state.burner = true; e.preventDefault(); }
+    if (e.code === 'KeyA' || e.code === 'ArrowLeft')        tryBash(+1);
+    if (e.code === 'KeyD' || e.code === 'ArrowRight')       tryBash(-1);
+    if (e.code === 'KeyR')                                  resetRun();
+  });
+  document.addEventListener('keyup', (e) => {
+    if (e.code === 'Space')                                 state.burner = false;
+  });
+
+  // ==========================================================
+  // MINIMAP — windy.app-style streamline particles
+  // ==========================================================
+  const mapCanvas = document.getElementById('mapCanvas');
+  const mapCtx = mapCanvas.getContext('2d');
+  const MAP_W = 320, MAP_H = 320;
+  const MAP_RANGE = 500;            // m — half-extent shown on minimap
+
+  document.getElementById('mapScale').textContent = `±${MAP_RANGE} m`;
+
+  // -------- Terrain underlay (topographic hillshade, pre-rendered once) --------
+  const TERRAIN = buildTerrain();
+  function buildTerrain() {
+    const SCALE = 2.5;              // m per pixel — fine enough for smooth hillshade
+    const MIN_X = -500, MAX_X = 1300;
+    const MIN_Z = -600, MAX_Z = 600;
+    const PX_W = Math.round((MAX_X - MIN_X) / SCALE);
+    const PX_H = Math.round((MAX_Z - MIN_Z) / SCALE);
+    const c = document.createElement('canvas');
+    c.width = PX_W; c.height = PX_H;
+    const cx = c.getContext('2d');
+    const img = cx.createImageData(PX_W, PX_H);
+    const data = img.data;
+
+    function elevation(wx, wz) {
+      let h = 0;
+      for (const m of MOUNTAINS) {
+        const dx = wx - m.x, dz = wz - m.z;
+        const r = Math.hypot(dx, dz);
+        const angle = Math.atan2(dz, dx);
+        const effR = mountainR(m, angle);
+        if (r < effR) {
+          // base cone + mild radial height noise for textured slopes
+          let he = m.h * (1 - r / effR);
+          he *= 1 + Math.sin(r * 0.05 + m.seed * 2.3) * 0.06;
+          if (he > h) h = he;
+        }
+      }
+      return h;
+    }
+    function colorFor(h) {
+      if (h < 1)   return [ 70, 108,  60];   // green plain
+      if (h <  60) { const t = h / 60;       return [ 70 + t * 55, 108 + t * 25,  60 - t * 15]; }
+      if (h < 150) { const t = (h - 60)/90;  return [125 + t * 40, 133 - t * 40,  45 - t *  0]; }
+      if (h < 230) { const t = (h - 150)/80; return [165 + t * 40, 135 + t * 50,  75 + t * 60]; }
+      const t = Math.min(1, (h - 230) / 80);
+      return [205 + t * 45, 195 + t * 50, 180 + t * 60];   // grey rock → snow
+    }
+
+    // finite-difference hillshade
+    const step = SCALE * 1.2;
+    const exag = 1.6;
+    const lx = -0.42, ly = 0.80, lz = -0.42;    // light from NW, high sun
+    for (let py = 0; py < PX_H; py++) {
+      for (let px = 0; px < PX_W; px++) {
+        const wx = MIN_X + px * SCALE;
+        const wz = MIN_Z + py * SCALE;
+        const h  = elevation(wx, wz);
+        const hE = elevation(wx + step, wz);
+        const hS = elevation(wx, wz + step);
+        const nx = -(hE - h) / step * exag;
+        const nz = -(hS - h) / step * exag;
+        const ny = 1;
+        const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz);
+        const shade = Math.max(0.55, Math.min(1.15,
+          (nx * lx + ny * ly + nz * lz) / nLen + 0.1));
+        const [r, g, b] = colorFor(h);
+        const i = (py * PX_W + px) * 4;
+        data[i]     = Math.min(255, r * shade);
+        data[i + 1] = Math.min(255, g * shade);
+        data[i + 2] = Math.min(255, b * shade);
+        data[i + 3] = 255;
+      }
+    }
+    cx.putImageData(img, 0, 0);
+
+    // overlay: contour lines every 50 m — trace the organic silhouette
+    cx.strokeStyle = 'rgba(40, 30, 20, 0.32)';
+    cx.lineWidth = 0.7;
+    const steps = 56;
+    for (const m of MOUNTAINS) {
+      const mxPx = (m.x - MIN_X) / SCALE;
+      const mzPx = (m.z - MIN_Z) / SCALE;
+      for (let level = 50; level < m.h; level += 50) {
+        const ratio = 1 - level / m.h;
+        cx.beginPath();
+        for (let i = 0; i <= steps; i++) {
+          const angle = (i / steps) * Math.PI * 2;
+          const rLv = mountainR(m, angle) * ratio;
+          const x = mxPx + Math.cos(angle) * rLv / SCALE;
+          const y = mzPx + Math.sin(angle) * rLv / SCALE;
+          if (i === 0) cx.moveTo(x, y);
+          else         cx.lineTo(x, y);
+        }
+        cx.stroke();
+      }
+    }
+    return { canvas: c, minX: MIN_X, minZ: MIN_Z, scale: SCALE };
+  }
+
+  // -------- Particle overlay (self-fading trails, transparent) --------
+  const particleCanvas = document.createElement('canvas');
+  particleCanvas.width = MAP_W;
+  particleCanvas.height = MAP_H;
+  const particleCtx = particleCanvas.getContext('2d');
+
+  // World-space particles — keeps them aligned with the (world-space) terrain
+  const N_PARTICLES = 300;
+  const particles = [];
+  function initParticles() {
+    for (let i = 0; i < N_PARTICLES; i++) {
+      particles.push({
+        x: (Math.random() - 0.5) * MAP_RANGE * 2.2,
+        z: (Math.random() - 0.5) * MAP_RANGE * 2.2,
+        life: Math.random() * 60,
+        maxLife: 50 + Math.random() * 50,
+      });
+    }
+  }
+  initParticles();
+
+  function drawMinimap(dt) {
+    const bx = state.pos.x, bz = state.pos.z;
+
+    // ===== Particle layer (transparent canvas, self-fading trails) =====
+    particleCtx.globalCompositeOperation = 'destination-out';
+    particleCtx.fillStyle = 'rgba(0, 0, 0, 0.14)';
+    particleCtx.fillRect(0, 0, MAP_W, MAP_H);
+    particleCtx.globalCompositeOperation = 'source-over';
+
+    for (const p of particles) {
+      const w = windAt(p.x, 0, p.z);     // ground-level reference wind
+      const boost = 8;
+      p.x += w.vx * dt * boost;
+      p.z += w.vz * dt * boost;
+      p.life += dt;
+
+      const localX = p.x - bx;
+      const localZ = p.z - bz;
+
+      if (p.life > p.maxLife ||
+          Math.abs(localX) > MAP_RANGE * 1.15 ||
+          Math.abs(localZ) > MAP_RANGE * 1.15) {
+        p.x = bx + (Math.random() - 0.5) * MAP_RANGE * 2.2;
+        p.z = bz + (Math.random() - 0.5) * MAP_RANGE * 2.2;
+        p.life = 0;
+        continue;
+      }
+
+      const px = (localX / MAP_RANGE) * (MAP_W / 2) + MAP_W / 2;
+      const py = (localZ / MAP_RANGE) * (MAP_H / 2) + MAP_H / 2;
+      if (px < 0 || px > MAP_W || py < 0 || py > MAP_H) continue;
+
+      const spd = Math.hypot(w.vx, w.vz);
+      const t = Math.min(1, spd / 12);
+      const r = 170 + t * 85;
+      const g = 205 + t * 50;
+      const b = 255;
+      const a = 0.35 + t * 0.55;
+      particleCtx.fillStyle = `rgba(${r|0}, ${g|0}, ${b}, ${a})`;
+      particleCtx.fillRect(px - 1, py - 1, 2.2, 2.2);
+    }
+
+    // ===== Compose main minimap =====
+    // 1) Background (in case terrain doesn't cover)
+    mapCtx.fillStyle = '#1e2a38';
+    mapCtx.fillRect(0, 0, MAP_W, MAP_H);
+
+    // 2) Terrain underlay — windowed blit from pre-rendered topographic canvas
+    const srcX = (bx - MAP_RANGE - TERRAIN.minX) / TERRAIN.scale;
+    const srcY = (bz - MAP_RANGE - TERRAIN.minZ) / TERRAIN.scale;
+    const srcW = (MAP_RANGE * 2) / TERRAIN.scale;
+    const srcH = (MAP_RANGE * 2) / TERRAIN.scale;
+    mapCtx.drawImage(TERRAIN.canvas, srcX, srcY, srcW, srcH, 0, 0, MAP_W, MAP_H);
+
+    // 3) Particles (streamlines) on top
+    mapCtx.drawImage(particleCanvas, 0, 0);
+
+    // 4) Markers
+    // balloon
+    mapCtx.beginPath();
+    mapCtx.arc(MAP_W / 2, MAP_H / 2, 6, 0, Math.PI * 2);
+    mapCtx.fillStyle = '#fff';
+    mapCtx.fill();
+    mapCtx.strokeStyle = '#000';
+    mapCtx.lineWidth = 1.5;
+    mapCtx.stroke();
+
+    // velocity arrow
+    const vx = state.vel.x, vz = state.vel.z;
+    const vlen = Math.hypot(vx, vz);
+    if (vlen > 0.1) {
+      const arrLen = 16;
+      mapCtx.strokeStyle = '#ffeb3b';
+      mapCtx.lineWidth = 2.5;
+      mapCtx.beginPath();
+      mapCtx.moveTo(MAP_W / 2, MAP_H / 2);
+      mapCtx.lineTo(MAP_W / 2 + (vx / vlen) * arrLen, MAP_H / 2 + (vz / vlen) * arrLen);
+      mapCtx.stroke();
+    }
+
+    // goal marker
+    const gdx = GOAL_DISTANCE - bx;
+    const gdz = 0 - bz;
+    if (Math.abs(gdx) <= MAP_RANGE && Math.abs(gdz) <= MAP_RANGE) {
+      const gx = (gdx / MAP_RANGE) * (MAP_W / 2) + MAP_W / 2;
+      const gy = (gdz / MAP_RANGE) * (MAP_H / 2) + MAP_H / 2;
+      mapCtx.fillStyle = '#ffd700';
+      mapCtx.beginPath();
+      mapCtx.arc(gx, gy, 8, 0, Math.PI * 2);
+      mapCtx.fill();
+      mapCtx.strokeStyle = '#5a4500';
+      mapCtx.lineWidth = 2;
+      mapCtx.stroke();
+    } else {
+      const angle = Math.atan2(gdz, gdx);
+      const r = Math.min(MAP_W, MAP_H) * 0.46;
+      const ax = MAP_W / 2 + Math.cos(angle) * r;
+      const ay = MAP_H / 2 + Math.sin(angle) * r;
+      mapCtx.save();
+      mapCtx.translate(ax, ay);
+      mapCtx.rotate(angle);
+      mapCtx.fillStyle = '#ffd700';
+      mapCtx.beginPath();
+      mapCtx.moveTo(9, 0);
+      mapCtx.lineTo(-5, -6);
+      mapCtx.lineTo(-5, 6);
+      mapCtx.closePath();
+      mapCtx.fill();
+      mapCtx.strokeStyle = '#5a4500';
+      mapCtx.lineWidth = 1.2;
+      mapCtx.stroke();
+      mapCtx.restore();
+    }
+  }
+
+  // ==========================================================
+  // PHYSICS
+  // ==========================================================
+  function updatePhysics(dt) {
+    if (state.finished) return;
+
+    // Smooth burner ramp
+    const target = state.burner ? 1 : 0;
+    const rate = dt / BURNER_RAMP;
+    state.burnerPower += (target - state.burnerPower) * Math.min(1, rate);
+
+    // Vertical motion — height has no effect on wind, purely balloon-feel
+    const vy = state.burnerPower * ACTIVE_RISE - (1 - state.burnerPower) * PASSIVE_SINK;
+
+    // Horizontal wind — altitude-aware (wind weakens with height, mountain deflection
+    // fades above each peak)
+    const w = windAt(state.pos.x, state.pos.y, state.pos.z);
+    let vx = w.vx, vz = w.vz;
+
+    // Bash-Nudge timer
+    if (state.bashActive > 0) {
+      const wLen = Math.sqrt(w.vx * w.vx + w.vz * w.vz);
+      if (wLen > 0.1) {
+        const nx = -w.vz / wLen;  // left perpendicular to wind
+        const nz =  w.vx / wLen;
+        vx += nx * BASH_VELOCITY * state.bashDir;
+        vz += nz * BASH_VELOCITY * state.bashDir;
+      }
+      state.bashActive -= dt;
+      if (state.bashActive <= 0) {
+        state.bashActive = 0;
+        state.bashCooldown = BASH_COOLDOWN;
+        state.bashDir = 0;
+      }
+    } else if (state.bashCooldown > 0) {
+      state.bashCooldown = Math.max(0, state.bashCooldown - dt);
+    }
+
+    state.vel.set(vx, vy, vz);
+    state.pos.x += vx * dt;
+    state.pos.y += vy * dt;
+    state.pos.z += vz * dt;
+
+    balloon.position.copy(state.pos);
+    balloonShadow.position.x = state.pos.x;
+    balloonShadow.position.z = state.pos.z;
+    balloonShadow.scale.setScalar(1 + state.pos.y / 400);
+    balloonShadow.material.opacity = Math.max(0.05, 0.35 - state.pos.y / 600);
+
+    // Mountain collision — instant crash
+    if (mountainHit(state.pos.x, state.pos.y, state.pos.z)) {
+      return finish('crashed', 'In einen Berg geflogen');
+    }
+
+    // Landing: ground contact decides win vs crash based on XZ distance to goal
+    if (state.pos.y <= 0) {
+      state.pos.y = 0;
+      const dx = state.pos.x - GOAL_DISTANCE;
+      const dz = state.pos.z;
+      const inGoal = Math.sqrt(dx * dx + dz * dz) < GOAL_RADIUS;
+      return inGoal
+        ? finish('won',     'Ziel erreicht')
+        : finish('crashed', 'Außerhalb des Ziels gelandet');
+    }
+  }
+
+  function finish(kind, msg) {
+    state.finished = kind;
+    const b = document.getElementById('banner');
+    b.classList.add('show', kind === 'won' ? 'win' : 'fail');
+    b.innerHTML = msg + '<div class="sub">R drücken für neuen Versuch</div>';
+  }
+
+  // ==========================================================
+  // CAMERA — 45° oblique, follows balloon with light damping
+  // ==========================================================
+  const camOffset = new THREE.Vector3(-180, 180, 150);
+  function updateCamera(dt) {
+    const target = state.pos.clone();
+    const desired = target.clone().add(camOffset);
+    camera.position.lerp(desired, 1 - Math.pow(0.001, dt));
+    // look ahead (east, toward goal)
+    camera.lookAt(target.x + 80, target.y - 10, target.z);
+  }
+
+  // ==========================================================
+  // HUD
+  // ==========================================================
+  function updateHud() {
+    document.getElementById('altitude').textContent = `${state.pos.y.toFixed(0)} m`;
+    const dx = state.pos.x - GOAL_DISTANCE;
+    const dz = state.pos.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    document.getElementById('distance').textContent = `${dist.toFixed(0)} m`;
+    const spd = Math.sqrt(state.vel.x ** 2 + state.vel.z ** 2);
+    document.getElementById('speed').textContent = `${spd.toFixed(1)} m/s`;
+    document.getElementById('burner').textContent =
+      state.burner ? `heizt (${(state.burnerPower * 100).toFixed(0)} %)` : 'aus';
+    document.getElementById('nudge').textContent =
+      state.bashActive > 0   ? `bash ${state.bashDir > 0 ? '◀' : '▶'}` :
+      state.bashCooldown > 0 ? `cooldown ${state.bashCooldown.toFixed(1)}s` :
+                               'bereit';
+  }
+
+  // ==========================================================
+  // LOOP
+  // ==========================================================
+  let lastT = performance.now();
+  function animate(now) {
+    requestAnimationFrame(animate);
+    const dt = Math.min(0.05, (now - lastT) / 1000);
+    lastT = now;
+
+    updatePhysics(dt);
+    updateCamera(dt);
+    drawMinimap(dt);
+    updateHud();
+    renderer.render(scene, camera);
+  }
+
+  // ==========================================================
+  // BOOT
+  // ==========================================================
+  resetRun();
+  // seed camera to correct position immediately
+  camera.position.copy(state.pos.clone().add(camOffset));
+  camera.lookAt(state.pos.x + 80, state.pos.y - 10, state.pos.z);
+  animate(performance.now());
+</script>
+
+</body>
+</html>
