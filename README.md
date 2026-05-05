@@ -1,5 +1,7 @@
 # Mostly Hot Air
 
+See [`BALLON_GDD.md`](BALLON_GDD.md) — the Game Design Document is the main source of truth for vision, mechanics, and development stages.
+
 ## How to start
 
 Each MVP prototype is a static web build. Serve it locally with `npx serve`:
