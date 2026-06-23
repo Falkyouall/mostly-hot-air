@@ -1,0 +1,4 @@
+# Godot 4 — engine cache and per-machine files
+.godot/
+*.import
+export_presets.cfg
