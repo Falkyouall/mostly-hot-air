@@ -1,0 +1,81 @@
+[gd_scene load_steps=12 format=3]
+
+[ext_resource type="Script" path="res://scripts/balloon.gd" id="1_balloon"]
+[ext_resource type="PackedScene" path="res://scenes/basket.tscn" id="2_basket"]
+[ext_resource type="PackedScene" path="res://scenes/station.tscn" id="3_station"]
+[ext_resource type="PackedScene" path="res://scenes/player.tscn" id="4_player"]
+[ext_resource type="Script" path="res://scripts/player_spawner.gd" id="5_spawner"]
+[ext_resource type="Script" path="res://scripts/station_brenner.gd" id="6_brenner"]
+[ext_resource type="Script" path="res://scripts/station_ruder.gd" id="7_ruder"]
+[ext_resource type="Script" path="res://scripts/station_ballast.gd" id="8_ballast"]
+
+[sub_resource type="SphereMesh" id="SphereMesh_envelope"]
+radius = 6.5
+height = 13.0
+
+[sub_resource type="StandardMaterial3D" id="Mat_envelope"]
+albedo_color = Color(0.92, 0.62, 0.30, 1)
+roughness = 0.55
+
+[sub_resource type="SphereMesh" id="SphereMesh_flame"]
+radius = 0.7
+height = 1.4
+
+[sub_resource type="StandardMaterial3D" id="Mat_flame"]
+albedo_color = Color(1, 0.6, 0.18, 1)
+emission_enabled = true
+emission = Color(1, 0.55, 0.15, 1)
+emission_energy_multiplier = 2.4
+roughness = 0.3
+
+[node name="Balloon" type="Node3D"]
+script = ExtResource("1_balloon")
+
+[node name="Envelope" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 11, 0)
+mesh = SubResource("SphereMesh_envelope")
+material_override = SubResource("Mat_envelope")
+
+[node name="Swing" type="Node3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 11, 0)
+
+[node name="Basket" parent="Swing" instance=ExtResource("2_basket")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -11, 0)
+
+[node name="BurnerFlame" type="MeshInstance3D" parent="Swing/Basket"]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2.4, 0)
+mesh = SubResource("SphereMesh_flame")
+material_override = SubResource("Mat_flame")
+visible = false
+
+[node name="Stations" type="Node3D" parent="Swing/Basket"]
+
+[node name="Station_Brenner" parent="Swing/Basket/Stations" instance=ExtResource("3_station")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.3, 0)
+script = ExtResource("6_brenner")
+station_name = &"Brenner"
+free_color = Color(0.35, 0.30, 0.24, 1)
+occupied_color = Color(1.0, 0.55, 0.18, 1)
+show_marker = false
+
+[node name="Station_Ruder" parent="Swing/Basket/Stations" instance=ExtResource("3_station")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.4, 0.12, 0)
+script = ExtResource("7_ruder")
+station_name = &"Stoss-Ruder"
+free_color = Color(0.30, 0.32, 0.40, 1)
+occupied_color = Color(0.50, 0.80, 0.95, 1)
+
+[node name="Station_Ballast" parent="Swing/Basket/Stations" instance=ExtResource("3_station")]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.12, -2.4)
+script = ExtResource("8_ballast")
+station_name = &"Ballast"
+free_color = Color(0.32, 0.28, 0.22, 1)
+occupied_color = Color(0.86, 0.78, 0.45, 1)
+
+[node name="PlayerSpawner" type="Node3D" parent="Swing/Basket"]
+script = ExtResource("5_spawner")
+player_scene = ExtResource("4_player")
+player_count = 1
+parent_path = NodePath("..")
+basket_radius = 3.35
+spawn_ring = 1.2

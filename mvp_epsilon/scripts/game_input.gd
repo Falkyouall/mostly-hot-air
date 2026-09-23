@@ -11,12 +11,16 @@ func _ready() -> void:
 	_key("move_left", [KEY_A, KEY_LEFT])
 	_key("move_right", [KEY_D, KEY_RIGHT])
 	_key("interact", [KEY_SPACE, KEY_E])
+	_key("secondary", [KEY_F])
+	_key("reset_run", [KEY_R])
 
 	_joy_axis("move_up", JOY_AXIS_LEFT_Y, -1.0)
 	_joy_axis("move_down", JOY_AXIS_LEFT_Y, 1.0)
 	_joy_axis("move_left", JOY_AXIS_LEFT_X, -1.0)
 	_joy_axis("move_right", JOY_AXIS_LEFT_X, 1.0)
 	_joy_button("interact", JOY_BUTTON_A)
+	_joy_button("secondary", JOY_BUTTON_X)
+	_joy_button("reset_run", JOY_BUTTON_BACK)
 
 
 func _ensure(action: StringName) -> void:

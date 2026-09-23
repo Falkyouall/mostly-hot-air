@@ -1,4 +1,4 @@
-[gd_scene load_steps=5 format=3]
+[gd_scene load_steps=7 format=3]
 
 [ext_resource type="Script" path="res://scripts/player.gd" id="1_player"]
 
@@ -6,30 +6,44 @@
 radius = 0.35
 height = 1.5
 
-[sub_resource type="CapsuleShape3D" id="CapsuleShape3D_body"]
-radius = 0.35
-height = 1.5
+; Bright brow/visor across the front — the big, readable "this way" cue.
+[sub_resource type="BoxMesh" id="BoxMesh_visor"]
+size = Vector3(0.5, 0.16, 0.16)
 
-[sub_resource type="SphereShape3D" id="SphereShape3D_sensor"]
-radius = 1.15
+[sub_resource type="StandardMaterial3D" id="Mat_visor"]
+albedo_color = Color(0.97, 0.95, 0.88, 1)
+roughness = 0.6
 
-[node name="Player" type="CharacterBody3D"]
-collision_layer = 2
-collision_mask = 1
+; Small dark eyes flanking the visor, so it reads as a face and not just a bar.
+[sub_resource type="BoxMesh" id="BoxMesh_eye"]
+size = Vector3(0.1, 0.1, 0.06)
+
+[sub_resource type="StandardMaterial3D" id="Mat_eye"]
+albedo_color = Color(0.1, 0.09, 0.09, 1)
+roughness = 0.4
+
+; A plain Node3D: the avatar is simulated in basket-local 2D (player.gd), not
+; by the physics server, so it needs no body or collider of its own. Station
+; range is a plain radius test (player.gd _to_station), so no sensor either.
+[node name="Player" type="Node3D"]
 script = ExtResource("1_player")
 
 [node name="Mesh" type="MeshInstance3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, 0)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.85, 0)
 mesh = SubResource("CapsuleMesh_body")
 
-[node name="Collision" type="CollisionShape3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.75, 0)
-shape = SubResource("CapsuleShape3D_body")
+; Face features sit on the front face (-Z), which player.gd treats as forward.
+[node name="Visor" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.28, -0.3)
+mesh = SubResource("BoxMesh_visor")
+material_override = SubResource("Mat_visor")
 
-[node name="InteractionSensor" type="Area3D" parent="."]
-collision_layer = 0
-collision_mask = 4
+[node name="EyeL" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0.14, 1.28, -0.36)
+mesh = SubResource("BoxMesh_eye")
+material_override = SubResource("Mat_eye")
 
-[node name="SensorShape" type="CollisionShape3D" parent="InteractionSensor"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0.6, 0)
-shape = SubResource("SphereShape3D_sensor")
+[node name="EyeR" type="MeshInstance3D" parent="."]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -0.14, 1.28, -0.36)
+mesh = SubResource("BoxMesh_eye")
+material_override = SubResource("Mat_eye")

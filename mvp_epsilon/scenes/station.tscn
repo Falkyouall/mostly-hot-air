@@ -1,14 +1,13 @@
-[gd_scene load_steps=4 format=3]
+[gd_scene load_steps=3 format=3]
 
 [ext_resource type="Script" path="res://scripts/station.gd" id="1_station"]
 
 [sub_resource type="BoxMesh" id="BoxMesh_marker"]
 size = Vector3(0.7, 1.0, 0.7)
 
-[sub_resource type="CylinderShape3D" id="CylinderShape3D_trigger"]
-radius = 0.95
-height = 2.2
-
+; The activation zone is a floor ring built in station.gd from activation_radius
+; (single source of truth), so there is no collision Trigger here any more —
+; range is a plain radius test in player.gd.
 [node name="Station" type="Node3D"]
 script = ExtResource("1_station")
 
@@ -21,11 +20,3 @@ transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.45, 0)
 billboard = 1
 pixel_size = 0.012
 text = "Station"
-
-[node name="Trigger" type="Area3D" parent="."]
-collision_layer = 4
-collision_mask = 0
-
-[node name="TriggerShape" type="CollisionShape3D" parent="Trigger"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.1, 0)
-shape = SubResource("CylinderShape3D_trigger")

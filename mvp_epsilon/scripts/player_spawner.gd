@@ -1,27 +1,28 @@
 class_name PlayerSpawner
 extends Node3D
-## Spawns 1–4 players. M2-E5 runs with player_count = 1 (the solo test), but
-## the spawn path is identical for 4 — going multiplayer is a config change,
-## not a rewrite (H2_DESIGN §4.3).
+## Spawns 1–4 players inside a basket node. M2-E6 runs with player_count = 1
+## (the solo test), but the same code path is used for 4 — multiplayer is a
+## config change, not a rewrite (H2_DESIGN §4.3).
 
 @export var player_scene: PackedScene
 @export_range(1, 4) var player_count: int = 1
-@export var basket_center: Vector3 = Vector3.ZERO
-@export var basket_radius: float = 3.0
-## Radius of the ring the avatars spawn on.
+## Node the avatars are parented under. They walk in its local frame, so they
+## move with whatever moves it (typically the basket inside a balloon).
+@export var parent_path: NodePath
+## Inner radius of the basket rim. Avatars are kept inside it, body included.
+@export var basket_radius: float = 3.35
 @export var spawn_ring: float = 1.5
 
 
-func spawn(into: Node) -> Array[Player]:
+func spawn() -> Array[Player]:
+	var holder: Node = get_node(parent_path) if not parent_path.is_empty() else get_parent()
 	var players: Array[Player] = []
 	for i in player_count:
 		var player := player_scene.instantiate() as Player
 		player.player_index = i
-		player.basket_center = basket_center
 		player.basket_radius = basket_radius
 		var angle := TAU * float(i) / float(player_count)
-		player.position = basket_center + Vector3(
-			cos(angle) * spawn_ring, 0.0, sin(angle) * spawn_ring)
-		into.add_child(player)
+		player.position = Vector3(cos(angle) * spawn_ring, 0.0, sin(angle) * spawn_ring)
+		holder.add_child(player)
 		players.append(player)
 	return players

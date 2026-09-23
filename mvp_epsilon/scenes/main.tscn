@@ -1,17 +1,16 @@
-[gd_scene load_steps=10 format=3]
+[gd_scene load_steps=8 format=3]
 
 [ext_resource type="Script" path="res://scripts/game.gd" id="1_game"]
-[ext_resource type="PackedScene" path="res://scenes/basket.tscn" id="2_basket"]
-[ext_resource type="PackedScene" path="res://scenes/station.tscn" id="3_station"]
-[ext_resource type="PackedScene" path="res://scenes/player.tscn" id="4_player"]
-[ext_resource type="Script" path="res://scripts/player_spawner.gd" id="5_spawner"]
-[ext_resource type="Script" path="res://scripts/camera_rig.gd" id="6_camera"]
+[ext_resource type="PackedScene" path="res://scenes/level.tscn" id="2_level"]
+[ext_resource type="PackedScene" path="res://scenes/balloon.tscn" id="3_balloon"]
+[ext_resource type="Script" path="res://scripts/camera_rig.gd" id="4_camera"]
+[ext_resource type="PackedScene" path="res://scenes/hud.tscn" id="5_hud"]
 
 [sub_resource type="ProceduralSkyMaterial" id="SkyMat_1"]
 sky_top_color = Color(0.42, 0.6, 0.78, 1)
 sky_horizon_color = Color(0.88, 0.79, 0.62, 1)
-ground_horizon_color = Color(0.88, 0.79, 0.62, 1)
-ground_bottom_color = Color(0.55, 0.5, 0.42, 1)
+ground_horizon_color = Color(0.65, 0.74, 0.62, 1)
+ground_bottom_color = Color(0.45, 0.55, 0.45, 1)
 
 [sub_resource type="Sky" id="Sky_1"]
 sky_material = SubResource("SkyMat_1")
@@ -21,6 +20,9 @@ background_mode = 2
 sky = SubResource("Sky_1")
 ambient_light_source = 3
 tonemap_mode = 2
+fog_enabled = true
+fog_light_color = Color(0.78, 0.83, 0.92, 1)
+fog_density = 0.0012
 
 [node name="Game" type="Node3D"]
 script = ExtResource("1_game")
@@ -34,30 +36,15 @@ light_color = Color(1, 0.93, 0.8, 1)
 light_energy = 1.2
 shadow_enabled = true
 
+[node name="Level" parent="." instance=ExtResource("2_level")]
+
+[node name="Balloon" parent="." instance=ExtResource("3_balloon")]
+
 [node name="Camera3D" type="Camera3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 9, 9)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0)
 fov = 55.0
-script = ExtResource("6_camera")
+script = ExtResource("4_camera")
+back_offset = 52.0
+height_offset = 26.0
 
-[node name="Basket" parent="." instance=ExtResource("2_basket")]
-
-[node name="Stations" type="Node3D" parent="."]
-
-[node name="Station_Fernrohr" parent="Stations" instance=ExtResource("3_station")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 2.6, 0.12, 0)
-station_name = &"Fernrohr"
-
-[node name="Station_Ruder" parent="Stations" instance=ExtResource("3_station")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.3, 0.12, 2.25)
-station_name = &"Stoss-Ruder"
-
-[node name="Station_Ballast" parent="Stations" instance=ExtResource("3_station")]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, -1.3, 0.12, -2.25)
-station_name = &"Ballast"
-
-[node name="PlayerSpawner" type="Node3D" parent="."]
-script = ExtResource("5_spawner")
-player_scene = ExtResource("4_player")
-player_count = 1
-basket_radius = 3.0
-spawn_ring = 1.5
+[node name="HUD" parent="." instance=ExtResource("5_hud")]
