@@ -39,6 +39,9 @@ func _key(action: StringName, keycodes: Array) -> void:
 func _joy_axis(action: StringName, axis: int, value: float) -> void:
 	_ensure(action)
 	var ev := InputEventJoypadMotion.new()
+	# New joypad events only match device 0; -1 means any pad. Chrome often
+	# hands a controller index 1 or higher.
+	ev.device = -1
 	ev.axis = axis
 	ev.axis_value = value
 	InputMap.action_add_event(action, ev)
@@ -47,5 +50,6 @@ func _joy_axis(action: StringName, axis: int, value: float) -> void:
 func _joy_button(action: StringName, button: int) -> void:
 	_ensure(action)
 	var ev := InputEventJoypadButton.new()
+	ev.device = -1
 	ev.button_index = button
 	InputMap.action_add_event(action, ev)

@@ -503,12 +503,16 @@ func _setup_input() -> void:
 			ev.physical_keycode = code
 			InputMap.action_add_event(action, ev)
 		if axes.has(action):
+			# New joypad events only match device 0; -1 means any pad. Chrome
+			# often hands a controller index 1 or higher.
 			var motion := InputEventJoypadMotion.new()
+			motion.device = -1
 			motion.axis = axes[action][0]
 			motion.axis_value = axes[action][1]
 			InputMap.action_add_event(action, motion)
 		if buttons.has(action):
 			var btn := InputEventJoypadButton.new()
+			btn.device = -1
 			btn.button_index = buttons[action]
 			InputMap.action_add_event(action, btn)
 
