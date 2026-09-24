@@ -4,8 +4,8 @@
 > Sobald der Prototyp-Scope steht, sollte es in ein eigenes Repo umziehen.
 
 ## $meta
-- **Version:** 0.5.0
-- **Status:** Frühe Konzeption, visuelle Richtung festgelegt, Titel festgelegt, MVP-Hypothesen formuliert, H1-Detail-Design verabschiedet
+- **Version:** 0.6.0
+- **Status:** Frühe Konzeption, visuelle Richtung festgelegt, Titel festgelegt, MVP-Hypothesen formuliert, H1-Detail-Design verabschiedet, H5 (Motor-Steuerung) als Prototyp-Abzweig in `mvp_zeta`
 - **Erstellt:** 2026-04-16
 - **Engine:** Godot 4
 - **Modus:** Lokaler Couch-Coop, 2–4 Spieler (Online optional später)
@@ -59,6 +59,17 @@ Validierbar ab Etappe 11+ mit voll ausgebautem Korb und mehreren Upgrades.
 #### H4 — Roguelite-Pull
 *Macht die Propeller-Upgrade-Schleife Lust auf Folgeruns?*
 Validierbar ab Etappe 15 mit kompletter Run-Struktur (≥3 Level, Upgrade-Menü).
+
+**Alternativ-Hypothese zu H1** — Abzweig, der H1 ersetzen würde, falls er sich im Handspiel als besser erweist:
+
+#### H5 — Motor-Steuerung mit Wind als Störung
+*Trägt eine direkte Steuerung (schwenkbarer Außenbordmotor, ca. 80 % Kontrolle) plus Windbänder als 20 % Störung und Hilfe besser als die rein indirekte Höhensteuerung aus H1?*
+- **Modell:** Ein **Pilotenstand** in der Korbmitte bündelt Brenner, Ventil, Pinne und Gashebel (drei Stufen). Der Motor sitzt auf einer Schiene um den Korb und schiebt in Pinnenrichtung; die Pinne bleibt stehen, wenn niemand am Stand ist. Der Wind bleibt: unteres Band böig mit Wirbeln im Lee der Berge und Thermik über Dörfern, mittleres Band halb so böig, oberes Band schnell und ruhig. Das Verhältnis Motor : Wind ergibt sich aus der Bandstärke (unten ≈ 80 : 20, oben ≈ 60 : 40). Motor und Brenner teilen sich den Tank, Halbgas ist fast umsonst, Vollgas teuer — mit dem Wind fahren spart.
+- **Realitätsbezug:** In der atmosphärischen Grenzschicht nimmt der Wind mit der Höhe zu und wird gleichmäßiger, unten erzeugen Bodenreibung und Thermik Turbulenz; die Richtung dreht mit der Höhe (Ekman-Spirale), echte Gegenrichtungen sind Sonderfälle (Albuquerque Box).
+- **Validiert durch:** `mvp_zeta` (Pilotenstand-Umbau, 2026-09-23). Solo spielbar.
+- **Risiko:** Mittel. Mit 80 % Kontrolle wird das Spiel leicht, sobald der Spieler am Stand bleiben kann — die Spannung muss aus Werkstatt-Kette, Sprit und Böen kommen. Der Bot bleibt im unteren Band und umfährt Berge; ob die oberen Bänder je attraktiv sind, ist offen.
+- **Abbruchkriterium:** Windbänder werden ignoriert, Höhe wird nur noch für Berge geändert, Fahrten fühlen sich wie „Punkt anfahren" an. Dann ist H5 nur ein Twin-Stick-Lieferspiel und H1 bleibt.
+- **Coop-Konsequenz (falls H5 trägt):** Der Pilotenstand ist *eine* Station für *eine* Person; alle anderen können nur indirekt eingreifen (Fernrohr, Ballast, Werkstatt). Das verschärft H2, entscheidet aber nichts vor dem Handspiel.
 
 ---
 
@@ -252,6 +263,7 @@ Dieselbe Kamera, unterschiedliche Tageszeiten/Atmosphären — dienen als **Stim
 6. **Input-Geräte:** Controller-Pflicht, oder auch Tastatur-Splits?
 7. **Anker-Detail:** Bei welcher Windstärke kippt der Ballon? Was passiert bei maximaler Schräglage?
 8. *(Aus §4.4)* Korb-Zentrum, Charakter-Proportionen, Wolken-Technik, Farbpalette.
+9. **Hauptsteuerung: Höhe (H1) oder Motor (H5)?** Entscheidung nach Handspiel von `mvp_zeta` mit Pilotenstand. Bei H5: Sind Spritpreise und Böenstärke die richtigen Stellschrauben, damit die oberen Bänder gebraucht werden? Bleibt der Brenner als Station interessant, wenn er nicht mehr lenkt?
 
 ---
 
@@ -396,6 +408,7 @@ Weitere Upgrades, weitere Gefahren, Sound, Visual Polish, Balance-Tuning, Menü,
 ---
 
 ## 8. Änderungshistorie
+- **2026-09-23 · v0.6.0** — Neue Alternativ-Hypothese **H5 Motor-Steuerung** in §1.3: schwenkbarer Außenbordmotor als ca. 80 % der Steuerung, Windbänder als 20 % Störung/Hilfe, Turbulenz nimmt mit der Höhe ab (Grenzschicht-Modell, recherchiert). Umgesetzt im Prototyp `mvp_zeta` als **Pilotenstand** (Brenner, Ventil, Pinne, Gashebel zentral, Twin-Stick). Neue offene Frage §5.9 (Höhe vs. Motor als Hauptsteuerung). §2 bleibt unverändert, bis das Handspiel entschieden hat.
 - **2026-04-17 · v0.5.0** — H1-Detail-Design verabschiedet und als separates Dokument `H1_DESIGN.md` angelegt. GDD bekommt Referenzen von §1.3 (H1-Hypothese) und §6 (M1-Banner) zum Detail-Dokument. §4 um Subsektion 4.5 „Kamera-Baseline" erweitert; `moodboard_06_camera_cruise_golden.png` als primäre Kamera-Referenz, Varianten 07–10 als Stimmungs-Spektrum. Hintergrund: mehrstündige Design-Diskussion hat Conveyor-Belt-Mentalmodell (Chip's-Challenge-Analogie), Wind-Viz-Hybrid (diegetische Schleier + Messing-HUD bottom-right), Level-Dimensionen (1500–3000m × 300–400m), Drift-Parameter (7–9 m/s + Turbulenz), Ballon-Physik (Binary-Brenner mit Lag/Afterglow, passives Sinken), Brennstoff-System (Ein-Pool, Glide-to-Ground), Win/Fail-Logik (Landing-Zone mit Retry solange Brennstoff reicht) und Kamera-Spec (Variante B, zielorientiert, vertikale Dämpfung) festgelegt.
 - **2026-04-17 · v0.4.1** — §6 Entwicklungsetappen um Meilenstein-Marker erweitert: Meilenstein-Übersicht unter der §6-Einleitung; visuelle Banner-Einschübe vor Etappe 0 (M1 Start), vor Etappe 5 (M1→M2 Übergang) und vor Etappe 9 (M2→Post-MVP Übergang). Jeder Übergang erinnert an das Validierungs-Gate der jeweiligen Kill-Hypothese.
 - **2026-04-17 · v0.4.0** — §1.3 MVP-Hypothesen hinzugefügt. Zwei Kill-Hypothesen (H1 Navigations-Fun, H2 Coop-Kommunikations-Druck) mit Abbruchkriterien; zwei Optimierungs-Hypothesen (H3 Stations-Enge, H4 Roguelite-Pull) als post-MVP. Einführung zweier Meilensteine M1 (Tech-MVP, Etappen 0–4) und M2 (Produkt-MVP / Vertical Slice, Etappen 5–8) als Validierungs-Gates.

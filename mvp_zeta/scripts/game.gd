@@ -29,6 +29,9 @@ const SIGHT_RANGE := 150.0
 # carry an overshot balloon back.
 const OVERSHOOT_DISTANCE := 380.0
 const HARD_LANDING := 7.0
+# Vorhalt: where the balloon will be in this many seconds at its current
+# ground speed. The gap between it and the Pinne is the wind, made visible.
+const LEAD_SECONDS := 10.0
 
 var state := State.INTRO
 var world: Node3D
@@ -46,6 +49,7 @@ var result := {}  # filled by _finish()
 
 var _marker: MeshInstance3D
 var _marker_mat: StandardMaterial3D
+var _lead: MeshInstance3D
 var _scope_t := 0.0
 var _shake := 0.0
 var _time := 0.0
@@ -122,7 +126,9 @@ func _physics_process(delta: float) -> void:
 			_check_overshoot()
 			threat_height = _scan_threat()
 	Sfx.set_burner(state == State.FLYING and balloon.is_flame_on())
+	Sfx.set_motor(balloon.motor_speed() / balloon.MOTOR_SPEED[2] if state == State.FLYING else 0.0)
 	_update_marker()
+	_update_lead()
 	if _args.has("shot") and _time >= float(_args.get("shot-at", 2.0)):
 		get_viewport().get_texture().get_image().save_png(_args["shot"])
 		get_tree().quit()
@@ -204,12 +210,16 @@ func _check_overshoot() -> void:
 		_finish("overshoot")
 
 
+# Rock within the next ~24 s: a corridor along the ground track, not just the
+# line — gusts and rotors bend the path, so the shoulders count too.
 func _scan_threat() -> float:
 	var worst := 0.0
 	var flat := Vector3(balloon.velocity.x, 0.0, balloon.velocity.z)
+	var side := Vector3(-flat.z, 0.0, flat.x).normalized() * 25.0
 	for i in range(1, 13):
-		var p: Vector3 = balloon.position + flat * (i * 2.0)
-		worst = maxf(worst, world.mountain_height(p.x, p.z))
+		for k in [-1.0, 0.0, 1.0]:
+			var p: Vector3 = balloon.position + flat * (i * 2.0) + side * k
+			worst = maxf(worst, world.mountain_height(p.x, p.z))
 	return worst
 
 
@@ -355,6 +365,21 @@ func _update_marker() -> void:
 		_marker_mat.albedo_color = Color(0.35, 0.35, 0.4)
 
 
+func lead_position() -> Vector3:
+	var b: Vector3 = balloon.position
+	var p := b + Vector3(balloon.velocity.x, 0.0, balloon.velocity.z) * LEAD_SECONDS
+	p.y = maxf(0.0, world.mountain_height(p.x, p.z)) + 1.0
+	return p
+
+
+func _update_lead() -> void:
+	_lead.visible = state == State.FLYING and not basket.scope_active
+	if not _lead.visible:
+		return
+	_lead.position = lead_position()
+	_lead.scale = Vector3(1.0, 0.05, 1.0) * (0.6 + balloon.position.y / 80.0)
+
+
 func _build_marker() -> void:
 	_marker_mat = StandardMaterial3D.new()
 	_marker_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
@@ -368,6 +393,21 @@ func _build_marker() -> void:
 	_marker.material_override = _marker_mat
 	_marker.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
 	add_child(_marker)
+
+	var lead_mat := StandardMaterial3D.new()
+	lead_mat.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
+	lead_mat.albedo_color = Color(0.85, 0.93, 1.0, 0.8)
+	lead_mat.transparency = BaseMaterial3D.TRANSPARENCY_ALPHA
+	var disc := CylinderMesh.new()
+	disc.top_radius = 2.2
+	disc.bottom_radius = 2.2
+	disc.height = 1.0
+	_lead = MeshInstance3D.new()
+	_lead.mesh = disc
+	_lead.material_override = lead_mat
+	_lead.cast_shadow = GeometryInstance3D.SHADOW_CASTING_SETTING_OFF
+	_lead.visible = false
+	add_child(_lead)
 
 
 func _confetti(at: Vector3) -> void:
@@ -428,16 +468,31 @@ func _build_environment() -> void:
 	add_child(sun)
 
 
+# Twin-stick at the Pilotenstand: left stick / WASD walks, right stick / arrows
+# set the Pinne, triggers (Leertaste / Umschalt) work Brenner and Ventil. All
+# of it only counts while standing at the column — basket.gd checks reach.
 func _setup_input() -> void:
 	var keys := {
-		"move_left": [KEY_A, KEY_LEFT],
-		"move_right": [KEY_D, KEY_RIGHT],
-		"move_up": [KEY_W, KEY_UP],
-		"move_down": [KEY_S, KEY_DOWN],
-		"interact": [KEY_E, KEY_SPACE],
+		"move_left": [KEY_A],
+		"move_right": [KEY_D],
+		"move_up": [KEY_W],
+		"move_down": [KEY_S],
+		"helm_left": [KEY_LEFT],
+		"helm_right": [KEY_RIGHT],
+		"helm_up": [KEY_UP],
+		"helm_down": [KEY_DOWN],
+		"burn": [KEY_SPACE],
+		"vent": [KEY_SHIFT],
+		"interact": [KEY_E],
 		"restart": [KEY_R],
 	}
-	var axes := {"move_left": [JOY_AXIS_LEFT_X, -1.0], "move_right": [JOY_AXIS_LEFT_X, 1.0], "move_up": [JOY_AXIS_LEFT_Y, -1.0], "move_down": [JOY_AXIS_LEFT_Y, 1.0]}
+	var axes := {
+		"move_left": [JOY_AXIS_LEFT_X, -1.0], "move_right": [JOY_AXIS_LEFT_X, 1.0],
+		"move_up": [JOY_AXIS_LEFT_Y, -1.0], "move_down": [JOY_AXIS_LEFT_Y, 1.0],
+		"helm_left": [JOY_AXIS_RIGHT_X, -1.0], "helm_right": [JOY_AXIS_RIGHT_X, 1.0],
+		"helm_up": [JOY_AXIS_RIGHT_Y, -1.0], "helm_down": [JOY_AXIS_RIGHT_Y, 1.0],
+		"burn": [JOY_AXIS_TRIGGER_RIGHT, 1.0], "vent": [JOY_AXIS_TRIGGER_LEFT, 1.0],
+	}
 	var buttons := {"interact": JOY_BUTTON_A, "restart": JOY_BUTTON_START}
 	for action in keys:
 		if InputMap.has_action(action):

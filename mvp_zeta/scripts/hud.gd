@@ -1,7 +1,8 @@
 extends Control
 # Immediate-mode HUD: everything is drawn in _draw() from live game state.
-# The altimeter is the steering wheel of this game — it shows which way each
-# altitude band blows right here, where the clouds sit, and rock ahead.
+# The altimeter shows which way each altitude band blows right here (the lane
+# choice), the motor gauge shows Pinne and throttle (the steering wheel), and
+# the Vorhalt disc on the ground shows where both together are taking you.
 
 const COL_PANEL := Color(0.10, 0.08, 0.12, 0.62)
 const COL_TEXT := Color(1.0, 0.97, 0.90)
@@ -36,10 +37,11 @@ func _draw() -> void:
 	_draw_altimeter()
 	_draw_gauges()
 	_draw_route()
+	_draw_lead()
 	_draw_target_pointer()
 	_draw_toast()
 	if game.basket.scope_active:
-		_text(Vector2(size.x * 0.5, size.y - 70.0), "FERNROHR — bewegen mit WASD / Stick", 22, COL_TEXT, true)
+		_text(Vector2(size.x * 0.5, size.y - 70.0), "FERNROHR — bewegen mit WASD / linker Stick", 22, COL_TEXT, true)
 	if game.state == game.State.ENDED:
 		_draw_result()
 
@@ -71,7 +73,7 @@ func _draw_altimeter() -> void:
 		var col: Color = band[2]
 		draw_rect(Rect2(x, y0, bar_w, y1 - y0 - 2.0), col)
 		var icon_alt: float = band[3]
-		var wind: Vector3 = w.wind_at(Vector3(b.position.x, icon_alt, b.position.z))
+		var wind: Vector3 = w.wind_at(Vector3(b.position.x, icon_alt, b.position.z), true)
 		var in_band: bool = b.position.y >= band[0] and b.position.y < band[1]
 		var c := Vector2(x + bar_w + 62.0, y_of.call(icon_alt))
 		draw_circle(c, 26.0, Color(col, 0.35 if not in_band else 0.8))
@@ -110,8 +112,8 @@ func _draw_altimeter() -> void:
 
 func _draw_gauges() -> void:
 	var b: Node3D = game.balloon
-	var origin := Vector2(24.0, size.y - 150.0)
-	draw_rect(Rect2(origin, Vector2(330.0, 130.0)), COL_PANEL)
+	var origin := Vector2(24.0, size.y - 184.0)
+	draw_rect(Rect2(origin, Vector2(330.0, 164.0)), COL_PANEL)
 	var bar := Rect2(origin + Vector2(84.0, 14.0), Vector2(230.0, 18.0))
 
 	_text(origin + Vector2(12.0, 30.0), "TANK", 16, COL_DIM)
@@ -129,13 +131,24 @@ func _draw_gauges() -> void:
 	var eq_x: float = bar.position.x + bar.size.x * b.equilibrium_heat()
 	draw_line(Vector2(eq_x, bar.position.y - 4.0), Vector2(eq_x, bar.end.y + 4.0), COL_TEXT, 2.0)
 
-	_text(origin + Vector2(12.0, 98.0), "HÜLLE", 16, COL_DIM)
+	# Motor: three notches for the Gashebel, a compass arrow for the Pinne.
+	_text(origin + Vector2(12.0, 98.0), "MOTOR", 16, COL_DIM)
+	for i in 3:
+		var notch := Rect2(origin + Vector2(84.0 + i * 62.0, 82.0), Vector2(56.0, 22.0))
+		var on: bool = i == b.throttle
+		draw_rect(notch, Color(1.0, 0.62, 0.2) if on else Color(0, 0, 0, 0.5))
+		_text(notch.position + Vector2(28.0, 16.0), b.THROTTLE_NAMES[i], 13, Color(0.15, 0.1, 0.1) if on else COL_DIM, true)
+	var compass := origin + Vector2(296.0, 93.0)
+	draw_circle(compass, 17.0, Color(0, 0, 0, 0.5))
+	_arrow(compass, b.thrust_dir, 12.0, COL_GOLD if b.motor_speed() > 0.0 else COL_DIM, 3.0)
+
+	_text(origin + Vector2(12.0, 132.0), "HÜLLE", 16, COL_DIM)
 	for i in b.MAX_HULL:
-		var c := origin + Vector2(98.0 + i * 30.0, 92.0)
+		var c := origin + Vector2(98.0 + i * 30.0, 126.0)
 		draw_circle(c, 10.0, COL_WARN if i < b.hull else Color(0, 0, 0, 0.5))
 
 	var stock: Dictionary = game.basket.stock
-	_text(origin + Vector2(12.0, 122.0), "Fallschirme %d  ·  Kanister %d  ·  Sandsäcke %d" % [game.basket.chutes, stock["kanister"], stock["sack"]], 15, COL_TEXT)
+	_text(origin + Vector2(12.0, 156.0), "Fallschirme %d  ·  Kanister %d  ·  Sandsäcke %d" % [game.basket.chutes, stock["kanister"], stock["sack"]], 15, COL_TEXT)
 
 
 # --- Route strip ---------------------------------------------------------------------------
@@ -163,12 +176,28 @@ func _draw_route() -> void:
 		if v.state == "open" and game.balloon.position.x > v.pos.x + w.PASS_DISTANCE:
 			draw_arc(Vector2(vx, y), 14.0, 0.0, TAU, 24, COL_WARN, 2.5)
 		if v.state == "done":
-			_text(Vector2(vx, y + 6.0), "✓", 15, Color(0.1, 0.2, 0.1), true)
+			# Drawn, not typed: the web build's font has no ✓ glyph.
+			draw_polyline(PackedVector2Array([Vector2(vx - 5.0, y), Vector2(vx - 1.5, y + 4.0), Vector2(vx + 5.0, y - 4.0)]), Color(0.1, 0.2, 0.1), 2.5)
 	var gx: float = x_of.call(w.goal_pos.x)
 	draw_rect(Rect2(gx - 9.0, y - 9.0, 18.0, 18.0), COL_TEXT)
 	var bx: float = x_of.call(game.balloon.position.x)
 	draw_colored_polygon(PackedVector2Array([Vector2(bx - 8.0, y - 24.0), Vector2(bx + 8.0, y - 24.0), Vector2(bx, y - 10.0)]), COL_WARN)
 	_text(Vector2(size.x * 0.5, 72.0), "Post %d/%d   ·   %d Punkte" % [w.delivered_count(), w.villages.size(), game.score], 15, COL_TEXT, true)
+
+
+# --- Vorhalt ----------------------------------------------------------------------------------
+
+func _draw_lead() -> void:
+	if game.state != game.State.FLYING or game.basket.scope_active:
+		return
+	var cam: Camera3D = game.camera
+	var p: Vector3 = game.lead_position()
+	if cam.is_position_behind(p):
+		return
+	var screen := cam.unproject_position(p)
+	if not Rect2(Vector2.ZERO, size).has_point(screen):
+		return
+	_text(screen + Vector2(0.0, -14.0), "in %d s" % int(game.LEAD_SECONDS), 14, Color(0.85, 0.93, 1.0, 0.9), true)
 
 
 # --- Pointer to the next stop -----------------------------------------------------------------
@@ -211,7 +240,7 @@ func _draw_order(pos: Vector2) -> void:
 	if v.is_empty():
 		return
 	if not v.known:
-		_text(pos, "Wunsch?  → Fernrohr", 16, COL_DIM, true)
+		_text(pos, "Wunsch?  » Fernrohr", 16, COL_DIM, true)
 		return
 	var text := "will %s" % Wares.label(v.order)
 	var half := _font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 18).x * 0.5
@@ -238,22 +267,23 @@ func _draw_intro() -> void:
 	var lines := [
 		"Du bist allein im Korb. Fünf Dörfer haben etwas bestellt — am Ende wartet der Hafen.",
 		"",
-		"FLIEGEN: Lenken geht nicht, nur Höhe. Jedes Band bläst woanders hin (Anzeige links).",
-		"BRENNER (Mitte) halten = steigen · VENTIL (rote Leine, oben) halten = sinken · ganz oben weht es zurück.",
+		"FLIEGEN: Am PILOTENSTAND (Mitte) steuerst du alles. Pfeile / rechter Stick = PINNE (Motor auf der Schiene),",
+		"E = GASHEBEL (Aus · Halbgas · Vollgas), Leertaste / RT = BRENNER, Umschalt / LT = VENTIL. Die Pinne bleibt stehen, wenn du gehst.",
+		"Der Wind (Anzeige links) schiebt trotzdem: unten böig und wirbelig, oben schnell und ruhig. Vollgas frisst Sprit, Halbgas fast nicht.",
 		"",
 		"LIEFERN: Jedes Dorf will Medizin (rot), Briefe (blau) oder Saatgut (gelb) — zu sehen an Flagge und Zielpunkt,",
-		"durch Wolken nur mit dem FERNROHR (rechts oben).  WARE (rechts) → PACKTISCH (E halten) → FALLSCHIRM",
-		"vom Haken (unten rechts) ans Paket — oder Paket zum Haken → Reling, E. Ring am Boden = Landepunkt, grün = trifft.",
+		"durch Wolken nur mit dem FERNROHR (rechts oben).  WARE (rechts) » PACKTISCH (E halten) » FALLSCHIRM",
+		"vom Haken (unten rechts) ans Paket — oder Paket zum Haken » Reling, E. Ring am Boden = Landepunkt, grün = trifft.",
 		"Fertige Pakete passen auf die ABLAGE. Ohne Fallschirm überlebt ein Paket nur den Tiefflug (unter 30 m).",
 		"",
-		"Tank leer? KANISTER (links) zum Brenner tragen.   SANDSACK über Bord = weniger Spritverbrauch, zäheres Sinken.",
+		"Tank leer? KANISTER (links) zum Pilotenstand tragen.   SANDSACK über Bord = weniger Spritverbrauch, zäheres Sinken.",
 		"",
-		"WASD / Stick = laufen     E / Leertaste / (A) = benutzen     R = Neustart",
+		"WASD / linker Stick = laufen     E / (A) = benutzen     R = Neustart",
 	]
 	for i in lines.size():
 		_text(Vector2(cx, y + 105.0 + i * 30.0), lines[i], 20, COL_TEXT, true)
 	var blink := 0.6 + 0.4 * sin(Time.get_ticks_msec() * 0.005)
-	_text(Vector2(cx, y + 530.0), "E drücken zum Abheben", 34, Color(COL_GOLD, blink), true)
+	_text(Vector2(cx, y + 560.0), "E drücken zum Abheben", 34, Color(COL_GOLD, blink), true)
 
 
 func _draw_result() -> void:
@@ -268,13 +298,11 @@ func _draw_result() -> void:
 	var cx := size.x * 0.5
 	var y := size.y * 0.5 - 150.0
 	_text(Vector2(cx, y), titles[r.outcome], 52, COL_WARN if r.outcome == "crash" else COL_GOLD, true)
-	var stars := ""
 	for i in 3:
-		stars += "★ " if i < r.stars else "☆ "
-	_text(Vector2(cx, y + 90.0), stars, 84, COL_GOLD, true)
+		_star(Vector2(cx + (i - 1) * 90.0, y + 62.0), 36.0, i < r.stars)
 	_text(Vector2(cx, y + 150.0), "Post zugestellt: %d / %d     Volltreffer: %d" % [r.delivered, game.world.villages.size(), r.bullseyes], 28, COL_TEXT, true)
 	_text(Vector2(cx, y + 190.0), "%d Punkte" % r.score, 36, COL_TEXT, true)
-	_text(Vector2(cx, y + 240.0), "★ 3 Zustellungen   ★★ 4 + Landung im Hafen   ★★★ alle 5 + Landung", 18, COL_DIM, true)
+	_text(Vector2(cx, y + 240.0), "1 Stern: 3 Zustellungen   ·   2 Sterne: 4 + Landung im Hafen   ·   3 Sterne: alle 5 + Landung", 18, COL_DIM, true)
 	_text(Vector2(cx, y + 300.0), "R = neue Fahrt (neue Karte, neuer Wind)", 26, COL_GOLD, true)
 
 
@@ -286,6 +314,18 @@ func _text(pos: Vector2, text: String, font_size: int, color: Color, centered :=
 		p.x -= _font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size).x * 0.5
 	draw_string_outline(_font, p, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, maxi(font_size / 6, 3), Color(0.08, 0.05, 0.08, color.a * 0.85))
 	draw_string(_font, p, text, HORIZONTAL_ALIGNMENT_LEFT, -1, font_size, color)
+
+
+# Five-pointed star as a polygon; the web build's font has no ★ glyph.
+func _star(center: Vector2, radius: float, filled: bool) -> void:
+	var pts := PackedVector2Array()
+	for k in 10:
+		var a := -PI * 0.5 + k * PI / 5.0
+		pts.append(center + Vector2(cos(a), sin(a)) * (radius if k % 2 == 0 else radius * 0.42))
+	if filled:
+		draw_colored_polygon(pts, COL_GOLD)
+	pts.append(pts[0])
+	draw_polyline(pts, COL_GOLD, 3.0)
 
 
 func _arrow(center: Vector2, dir: Vector2, length: float, color: Color, width: float) -> void:

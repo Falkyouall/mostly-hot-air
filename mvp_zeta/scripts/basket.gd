@@ -2,6 +2,11 @@ extends Node3D
 # Everything inside the railing: station layout, item piles, the crew member,
 # and the single-button interaction rules.
 #
+# The Pilotenstand is the column in the middle: burner and vent line hang from
+# it, the Pinne on top steers the Außenbordmotor, the Gashebel on its side has
+# three notches. Steering only happens within reach of the column — whoever is
+# packing at the table is not correcting the course.
+#
 # The basket is a workshop, not a switchboard. A delivery has to be *made*:
 #   Ware (pile) → Packtisch (hold to pack) → Fallschirm → railing
 # The parachute goes on either way round: carry the parcel to the Haken, or
@@ -49,6 +54,8 @@ var _shelf_spots: Array[Vector3] = []
 var _prompt: Label3D
 var _vent_handle: Node3D
 var _vent_pull := 0.0
+var _tiller: Node3D
+var _gas_lever: Node3D
 
 
 func _ready() -> void:
@@ -108,6 +115,10 @@ func _physics_process(delta: float) -> void:
 	_prompt.position = player.position + Vector3(0.0, 1.75 if carried.is_empty() else 2.2, 0.0)
 	_vent_pull = lerpf(_vent_pull, 1.0 if balloon.venting else 0.0, 1.0 - exp(-14.0 * delta))
 	_vent_handle.position.y = 1.35 - _vent_pull * 0.3
+	# Pinne points where the motor pushes; the lever's notch shows the throttle.
+	var d: Vector2 = balloon.thrust_dir
+	_tiller.rotation.y = lerp_angle(_tiller.rotation.y, atan2(-d.y, d.x), 1.0 - exp(-10.0 * delta))
+	_gas_lever.rotation.x = lerpf(_gas_lever.rotation.x, (balloon.throttle - 1) * 0.55, 1.0 - exp(-12.0 * delta))
 
 
 # Returns true while the Packtisch is being worked.
@@ -155,7 +166,7 @@ func _interact(delta: float) -> bool:
 					_chute_nodes[chutes].visible = false
 					_take({"kind": "schirm", "color": "", "chute": false})
 		"hold":
-			_operate(st, held, delta)
+			_operate(st, pressed, held, delta)
 	return false
 
 
@@ -208,15 +219,15 @@ func _interact_carrying(pressed: bool) -> void:
 				_prompt.text += "\nohne Schirm: nur im Tiefflug!"
 		_:
 			if kind == "kanister":
-				_prompt.text = "→ zum Brenner"
+				_prompt.text = "» zum Pilotenstand"
 			elif kind == "ware":
-				_prompt.text = "→ zum Packtisch"
+				_prompt.text = "» zum Packtisch"
 			elif kind == "schirm":
-				_prompt.text = "→ zu einem Paket\n(Packtisch / Ablage)"
+				_prompt.text = "» zu einem Paket\n(Packtisch / Ablage)"
 			elif kind == "paket" and not carried.chute:
-				_prompt.text = "→ Fallschirm-Haken"
+				_prompt.text = "» Fallschirm-Haken"
 			else:
-				_prompt.text = "→ zur Reling"
+				_prompt.text = "» zur Reling"
 	if not pressed:
 		return
 	match action:
@@ -277,7 +288,7 @@ func _interact_carrying(pressed: bool) -> void:
 func _carry_action(st: Dictionary) -> String:
 	var kind: String = carried.kind
 	match st.id:
-		"brenner":
+		"pilotenstand":
 			return "refuel" if kind == "kanister" else ""
 		"packtisch":
 			if kind == "ware" and _table.is_empty():
@@ -325,14 +336,22 @@ func _work_table(delta: float, pressed: bool, held: bool) -> bool:
 	return true
 
 
-func _operate(st: Dictionary, held: bool, delta: float) -> void:
+func _operate(st: Dictionary, pressed: bool, held: bool, delta: float) -> void:
 	match st.id:
-		"brenner":
-			_prompt.text = "[E] halten: Brennen" if balloon.fuel > 0.0 else "Tank leer!"
-			balloon.burning = held
-		"ventil":
-			_prompt.text = "[E] halten: Ventil"
-			balloon.venting = held
+		"pilotenstand":
+			_prompt.text = "[E] Gas: %s\nPfeile / R-Stick = Pinne · Leer / RT = Brenner · Umschalt / LT = Ventil" % balloon.THROTTLE_NAMES[balloon.throttle]
+			if balloon.fuel <= 0.0:
+				_prompt.text = "Tank leer! (Kanister, links)"
+			if pressed:
+				balloon.cycle_throttle()
+				Sfx.play("lever")
+			var helm := Input.get_vector("helm_left", "helm_right", "helm_up", "helm_down")
+			if helm.length() > 0.3:
+				balloon.thrust_dir = helm.normalized()
+				player.face_towards(player.position + Vector3(helm.x, 0.0, helm.y), delta)
+			balloon.burning = Input.is_action_pressed("burn")
+			balloon.venting = Input.is_action_pressed("vent")
+			return
 		"fernrohr":
 			_prompt.text = "[E] halten: Fernrohr"
 			scope_active = held
@@ -604,8 +623,10 @@ func _build_chute_rack(at: Vector3) -> void:
 # --- Lever stations -----------------------------------------------------------------------
 
 func _build_burner() -> void:
-	_stations.append({"id": "brenner", "kind": "hold", "pos": Vector3.ZERO, "radius": 0.5})
+	_stations.append({"id": "pilotenstand", "kind": "hold", "pos": Vector3.ZERO, "radius": 0.5})
+	_floor_mark(Vector3.ZERO, Color(0.85, 0.66, 0.30))
 	var iron := Color(0.20, 0.19, 0.22)
+	var brass := Color(0.85, 0.66, 0.30)
 	var stove := CylinderMesh.new()
 	stove.top_radius = 0.34
 	stove.bottom_radius = 0.42
@@ -629,6 +650,44 @@ func _build_burner() -> void:
 	glow_mat.emission = Color(1.0, 0.5, 0.15)
 	glow_mat.emission_energy_multiplier = 2.0
 
+	# Pinne: a brass arm on a pivot ring round the collar, arrowhead outward.
+	_tiller = Node3D.new()
+	_tiller.position = Vector3(0.0, 1.02, 0.0)
+	add_child(_tiller)
+	var arm := BoxMesh.new()
+	arm.size = Vector3(0.95, 0.06, 0.06)
+	_attach(_tiller, arm, brass, Vector3(0.55, 0.0, 0.0))
+	var head := CylinderMesh.new()
+	head.top_radius = 0.0
+	head.bottom_radius = 0.11
+	head.height = 0.3
+	head.radial_segments = 8
+	var head_mi := _attach(_tiller, head, brass, Vector3(1.12, 0.0, 0.0))
+	head_mi.rotation.z = -PI * 0.5
+	var knob := SphereMesh.new()
+	knob.radius = 0.07
+	knob.height = 0.14
+	_attach(_tiller, knob, Color(0.42, 0.28, 0.17), Vector3(0.9, 0.0, 0.0))
+
+	# Gashebel on the south face: three notches, the lever tilts through them.
+	var plate := BoxMesh.new()
+	plate.size = Vector3(0.3, 0.34, 0.05)
+	_attach(self, plate, brass, Vector3(0.0, 0.62, 0.43))
+	for i in 3:
+		var notch := BoxMesh.new()
+		notch.size = Vector3(0.05, 0.03, 0.06)
+		_attach(self, notch, iron, Vector3(0.09, 0.51 + i * 0.11, 0.44))
+	_gas_lever = Node3D.new()
+	_gas_lever.position = Vector3(-0.06, 0.62, 0.47)
+	add_child(_gas_lever)
+	var stem := BoxMesh.new()
+	stem.size = Vector3(0.04, 0.04, 0.3)
+	_attach(_gas_lever, stem, iron, Vector3(0.0, 0.0, 0.15))
+	var grip := SphereMesh.new()
+	grip.radius = 0.06
+	grip.height = 0.12
+	_attach(_gas_lever, grip, Color(0.85, 0.2, 0.18), Vector3(0.0, 0.0, 0.3))
+
 
 func _floor_mark(at: Vector3, color: Color) -> void:
 	var disc := CylinderMesh.new()
@@ -638,10 +697,10 @@ func _floor_mark(at: Vector3, color: Color) -> void:
 	_attach(self, disc, color, Vector3(at.x, 0.012, at.z) * Vector3(0.82, 1.0, 0.82))
 
 
+# The red vent line comes down the envelope mouth and hangs beside the column,
+# where the pilot can reach it without leaving the Pilotenstand.
 func _build_vent() -> void:
-	var at := Vector3(0.0, 0.0, -2.6)
-	_stations.append({"id": "ventil", "kind": "hold", "pos": at, "radius": 0.15})
-	_floor_mark(at, Color(0.85, 0.2, 0.18))
+	var at := Vector3(0.55, 0.0, -0.5)
 	_vent_handle = Node3D.new()
 	_vent_handle.position = at + Vector3(0.0, 1.35, 0.0)
 	add_child(_vent_handle)

@@ -1,6 +1,11 @@
 extends Node3D
-# The balloon as a vehicle: heat → lift, wind → drift, hull, fuel tank.
-# It has no idea who is pulling which lever; basket.gd sets `burning`/`venting`.
+# The balloon as a vehicle: heat → lift, motor + wind → drift, hull, fuel tank.
+# It has no idea who is pulling which lever; basket.gd sets `burning`/`venting`,
+# `throttle` and `thrust_dir`.
+#
+# The Außenbordmotor rides a rail around the basket and pushes from the side
+# opposite to its heading. Full throttle beats the low band about 80:20 and the
+# high band barely 60:40 — the wind is terrain now, not the steering wheel.
 
 signal hull_changed(hull: int)
 signal bumped(what: String)
@@ -25,6 +30,12 @@ const FUEL_PER_SEC := 3.0
 const TANK_MAX := 100.0
 const LIFT_PER_SACK := 1.5
 const MAX_HULL := 3
+# Three throttle notches. Power grows roughly with speed cubed, so Halbgas is
+# nearly free and Vollgas eats the tank (the burner takes 3/s).
+const MOTOR_SPEED: Array[float] = [0.0, 11.0, 26.0]
+const MOTOR_FUEL: Array[float] = [0.0, 0.3, 1.5]
+const THROTTLE_NAMES: Array[String] = ["Aus", "Halbgas", "Vollgas"]
+const RAIL_RADIUS := BASKET_RADIUS + 0.36
 
 var world: Node3D
 var active := false
@@ -37,6 +48,10 @@ var velocity := Vector3.ZERO
 var fuel := TANK_MAX
 var hull := MAX_HULL
 var extra_lift := 0.0
+# Feststell-Pinne: the heading stays put until someone at the Pilotenstand
+# moves it. Map XZ, unit length. Starts pointing east.
+var thrust_dir := Vector2(1.0, 0.0)
+var throttle := 0
 
 var visual: Node3D
 var _envelope_mat: ShaderMaterial
@@ -45,6 +60,9 @@ var _flame_light: OmniLight3D
 var _invuln := 0.0
 var _flame_amount := 0.0
 var _time := 0.0
+var _motor: Node3D
+var _prop: Node3D
+var _target_flat := Vector3.ZERO
 
 
 func _ready() -> void:
@@ -53,10 +71,23 @@ func _ready() -> void:
 	_build_basket_shell()
 	_build_envelope()
 	_build_flame()
+	_build_motor()
 
 
 func is_flame_on() -> bool:
 	return burning and fuel > 0.0
+
+
+func motor_speed() -> float:
+	return MOTOR_SPEED[throttle] if fuel > 0.0 else 0.0
+
+
+func thrust() -> Vector3:
+	return Vector3(thrust_dir.x, 0.0, thrust_dir.y) * motor_speed()
+
+
+func cycle_throttle() -> void:
+	throttle = (throttle + 1) % MOTOR_SPEED.size()
 
 
 func equilibrium_heat() -> float:
@@ -102,8 +133,11 @@ func _simulate(delta: float) -> void:
 	if venting:
 		heat -= HEAT_VENT * delta
 	heat = clampf(heat - HEAT_COOL * heat * delta, 0.0, 1.0)
+	var wind: Vector3 = world.wind_at(position)
+	_target_flat = Vector3(wind.x, 0.0, wind.z) + thrust()
+	fuel = maxf(fuel - MOTOR_FUEL[throttle] * delta, 0.0)
 
-	var target_vy := lerpf(VY_COLD, VY_HOT, heat) + extra_lift
+	var target_vy := lerpf(VY_COLD, VY_HOT, heat) + extra_lift + wind.y
 	if venting:
 		target_vy -= VENT_SINK
 	var soft_top: float = world.CEILING - 20.0
@@ -111,8 +145,7 @@ func _simulate(delta: float) -> void:
 		target_vy -= (position.y - soft_top) * 0.6
 	vy = lerpf(vy, target_vy, 1.0 - exp(-1.3 * delta))
 
-	var wind: Vector3 = world.wind_at(position)
-	velocity = velocity.lerp(wind, 1.0 - exp(-1.5 * delta))
+	velocity = velocity.lerp(_target_flat, 1.0 - exp(-1.5 * delta))
 	velocity.y = vy
 	position += velocity * delta
 
@@ -151,10 +184,16 @@ func _animate(delta: float) -> void:
 	_flame_light.light_energy = _flame_amount * flicker * 5.0
 	_envelope_mat.set_shader_parameter("glow", _flame_amount * flicker)
 
+	# Motor swings round the rail to the side it pushes from; the prop spins
+	# with the throttle.
+	var want_yaw := atan2(thrust_dir.y, -thrust_dir.x)
+	_motor.rotation.y = lerp_angle(_motor.rotation.y, want_yaw, 1.0 - exp(-5.0 * delta))
+	_prop.rotation.x += (motor_speed() * 1.4 if active else 0.0) * delta
+
 	# Cosmetic sway: lean into horizontal acceleration, plus a slow idle swing.
 	var lag := Vector3.ZERO
 	if active:
-		lag = world.wind_at(position) - velocity
+		lag = _target_flat - velocity
 	var target_x := clampf(lag.z * 0.01, -0.06, 0.06) + sin(_time * 0.7) * 0.012
 	var target_z := clampf(-lag.x * 0.01, -0.06, 0.06) + sin(_time * 0.9 + 1.3) * 0.012
 	if _invuln > 2.4:
@@ -231,6 +270,73 @@ func _build_envelope() -> void:
 		var a := TAU * i / 6.0
 		var dir := Vector3(cos(a), 0.0, sin(a))
 		_add_rod(dir * (BASKET_RADIUS + 0.1) + Vector3(0.0, WALL_HEIGHT, 0.0), dir * 4.8 + Vector3(0.0, ENVELOPE_Y - 4.3, 0.0), 0.045, rope)
+
+
+# Brass rail round the basket wall; the motor arm rides it. The prop plane is
+# perpendicular to the arm, so the whole thing reads as a fan from above.
+func _build_motor() -> void:
+	var brass := StandardMaterial3D.new()
+	brass.albedo_color = Color(0.85, 0.66, 0.30)
+	brass.metallic = 0.6
+	brass.roughness = 0.4
+	var rail := TorusMesh.new()
+	rail.inner_radius = RAIL_RADIUS - 0.06
+	rail.outer_radius = RAIL_RADIUS + 0.06
+	rail.rings = 56
+	rail.ring_segments = 8
+	_add_mesh(rail, brass, Vector3(0.0, WALL_HEIGHT * 0.55, 0.0))
+
+	var iron := StandardMaterial3D.new()
+	iron.albedo_color = Color(0.22, 0.21, 0.24)
+	iron.roughness = 0.6
+	_motor = Node3D.new()
+	visual.add_child(_motor)
+	var y := WALL_HEIGHT * 0.55
+	var arm := BoxMesh.new()
+	arm.size = Vector3(1.2, 0.12, 0.12)
+	var arm_mi := MeshInstance3D.new()
+	arm_mi.mesh = arm
+	arm_mi.material_override = brass
+	arm_mi.position = Vector3(RAIL_RADIUS + 0.45, y, 0.0)
+	_motor.add_child(arm_mi)
+	var clamp_mesh := BoxMesh.new()
+	clamp_mesh.size = Vector3(0.3, 0.32, 0.3)
+	var clamp_mi := MeshInstance3D.new()
+	clamp_mi.mesh = clamp_mesh
+	clamp_mi.material_override = iron
+	clamp_mi.position = Vector3(RAIL_RADIUS, y, 0.0)
+	_motor.add_child(clamp_mi)
+	var housing := CylinderMesh.new()
+	housing.top_radius = 0.22
+	housing.bottom_radius = 0.26
+	housing.height = 0.8
+	var housing_mi := MeshInstance3D.new()
+	housing_mi.mesh = housing
+	housing_mi.material_override = iron
+	housing_mi.position = Vector3(RAIL_RADIUS + 1.2, y, 0.0)
+	housing_mi.rotation.z = PI * 0.5
+	_motor.add_child(housing_mi)
+	_prop = Node3D.new()
+	_prop.position = Vector3(RAIL_RADIUS + 1.7, y, 0.0)
+	_motor.add_child(_prop)
+	var hub := SphereMesh.new()
+	hub.radius = 0.12
+	hub.height = 0.24
+	var hub_mi := MeshInstance3D.new()
+	hub_mi.mesh = hub
+	hub_mi.material_override = brass
+	_prop.add_child(hub_mi)
+	var blade_mat := StandardMaterial3D.new()
+	blade_mat.albedo_color = Color(0.62, 0.42, 0.24)
+	blade_mat.roughness = 0.7
+	for i in 2:
+		var blade := BoxMesh.new()
+		blade.size = Vector3(0.05, 1.5, 0.2)
+		var blade_mi := MeshInstance3D.new()
+		blade_mi.mesh = blade
+		blade_mi.material_override = blade_mat
+		blade_mi.rotation.x = i * PI * 0.5
+		_prop.add_child(blade_mi)
 
 
 func _build_flame() -> void:

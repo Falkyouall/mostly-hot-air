@@ -20,8 +20,21 @@ func _ready() -> void:
 	_steps = [
 		_walk(Vector2(0.0, 1.05)),
 		_remember(func() -> void: _memo = {"heat": balloon.heat, "fuel": balloon.fuel}),
-		_hold(1.5),
+		_hold(1.5, "burn"),
 		_check("Brenner heizt und verbraucht", func() -> bool: return balloon.heat > _memo.heat and balloon.fuel < _memo.fuel),
+		# Pilotenstand: Gashebel cycles, Pinne follows the helm stick and stays put.
+		_tap(),
+		_check("Gashebel auf Halbgas", func() -> bool: return balloon.throttle == 1 and balloon.motor_speed() > 0.0),
+		_tap(),
+		_check("Gashebel auf Vollgas", func() -> bool: return balloon.throttle == 2),
+		_helm(Vector2(0.0, -1.0), 0.4),
+		_check("Pinne zeigt nach Norden", func() -> bool: return balloon.thrust_dir.distance_to(Vector2(0.0, -1.0)) < 0.05),
+		_remember(func() -> void: _memo = {"fuel": balloon.fuel}),
+		_walk(Vector2(0.9, -0.1)),
+		_check("Pinne bleibt stehen, Motor läuft weiter", func() -> bool: return balloon.thrust_dir.distance_to(Vector2(0.0, -1.0)) < 0.05 and balloon.fuel < _memo.fuel),
+		_walk(Vector2(0.0, 1.05)),
+		_tap(),
+		_check("Gashebel wieder aus", func() -> bool: return balloon.throttle == 0),
 		# The delivery chain: ware → Packtisch → Fallschirm → Ablage → railing.
 		_walk(Vector2(0.9, -0.1)),
 		_walk(Vector2(1.6, -0.4)),
@@ -90,11 +103,10 @@ func _ready() -> void:
 		_walk(Vector2(-0.8, 0.1)),
 		_tap(),
 		_check("Tank aufgefüllt", func() -> bool: return basket.carried.is_empty() and balloon.fuel > 70.0),
-		_walk(Vector2(-0.9, -0.9)),
-		_walk(Vector2(0.0, -2.15)),
 		_remember(func() -> void: balloon.heat = 0.8),
-		_hold(1.0),
+		_hold(1.4, "vent"),
 		_check("Ventil kühlt", func() -> bool: return balloon.heat < 0.3),
+		_walk(Vector2(-0.9, -0.9)),
 		_walk(Vector2(1.35, -1.4)),
 		_hold(0.5),
 		_check("Fernrohr aktiv", func() -> bool: return basket.scope_active),
@@ -117,7 +129,7 @@ func _physics_process(delta: float) -> void:
 			done = to.length() < 0.08 or _step_time > 4.0
 			_steer(Vector2.ZERO if done else to.normalized())
 			if _step_time > 4.0:
-				_fail("walk to %s timed out" % step.to)
+				_fail("walk to %s timed out at (%.2f, %.2f)" % [step.to, p.x, p.z])
 		"tap":
 			if _step_time <= delta * 1.5:
 				Input.action_press("interact")
@@ -125,10 +137,15 @@ func _physics_process(delta: float) -> void:
 				Input.action_release("interact")
 				done = _step_time > 0.2
 		"hold":
-			Input.action_press("interact")
+			Input.action_press(step.action)
 			done = _step_time > step.time
 			if done and not step.get("keep", false):
-				Input.action_release("interact")
+				Input.action_release(step.action)
+		"helm":
+			_press_vector("helm", step.dir)
+			done = _step_time > step.time
+			if done:
+				_press_vector("helm", Vector2.ZERO)
 		"call":
 			step.fn.call()
 			done = true
@@ -138,7 +155,8 @@ func _physics_process(delta: float) -> void:
 				_fail(step.label)
 			else:
 				print("  ok   %s" % step.label)
-			Input.action_release("interact")
+			for action in ["interact", "burn", "vent"]:
+				Input.action_release(action)
 			done = true
 	if done:
 		_index += 1
@@ -146,16 +164,20 @@ func _physics_process(delta: float) -> void:
 
 
 func _steer(dir: Vector2) -> void:
-	for action in ["move_left", "move_right", "move_up", "move_down"]:
-		Input.action_release(action)
+	_press_vector("move", dir)
+
+
+func _press_vector(prefix: String, dir: Vector2) -> void:
+	for suffix in ["left", "right", "up", "down"]:
+		Input.action_release("%s_%s" % [prefix, suffix])
 	if dir.x < -0.05:
-		Input.action_press("move_left", -dir.x)
+		Input.action_press("%s_left" % prefix, -dir.x)
 	if dir.x > 0.05:
-		Input.action_press("move_right", dir.x)
+		Input.action_press("%s_right" % prefix, dir.x)
 	if dir.y < -0.05:
-		Input.action_press("move_up", -dir.y)
+		Input.action_press("%s_up" % prefix, -dir.y)
 	if dir.y > 0.05:
-		Input.action_press("move_down", dir.y)
+		Input.action_press("%s_down" % prefix, dir.y)
 
 
 func _fail(label: String) -> void:
@@ -171,8 +193,12 @@ func _tap() -> Dictionary:
 	return {"kind": "tap"}
 
 
-func _hold(time: float) -> Dictionary:
-	return {"kind": "hold", "time": time, "keep": true}
+func _hold(time: float, action := "interact") -> Dictionary:
+	return {"kind": "hold", "time": time, "keep": true, "action": action}
+
+
+func _helm(dir: Vector2, time: float) -> Dictionary:
+	return {"kind": "helm", "dir": dir, "time": time}
 
 
 func _remember(fn: Callable) -> Dictionary:

@@ -18,6 +18,13 @@ const CLOUD_Y_MAX := 134.0
 const VILLAGE_RADIUS := 30.0
 const BULLSEYE_RADIUS := 10.0
 const GOAL_RADIUS := 70.0
+# Turbulence (see README "Wind"): gusts get wilder the lower the band —
+# surface friction, thermals over the villages, rotors in the lee of the big
+# peaks. The high band runs fast and smooth.
+const GUST_LOW := 4.0
+const GUST_MID := 2.0
+const GUST_HIGH := 0.6
+const ROTOR_STRENGTH := 7.0
 
 const MAP_MIN := Vector2(-500.0, -900.0)
 const MAP_SIZE := Vector2(3400.0, 1500.0)
@@ -36,6 +43,11 @@ var goal_pos := Vector3(ROUTE_LEN, 0.0, 0.0)
 # Each cone: {pos: Vector2, radius, height}
 var cones: Array[Dictionary] = []
 var wind_sign := 1.0
+# Each rotor: {pos: Vector2, radius, sign} — a standing vortex east of a massif.
+var rotors: Array[Dictionary] = []
+var time := 0.0
+
+var _gust_noise := FastNoiseLite.new()
 
 var _rng := RandomNumberGenerator.new()
 var _noise := FastNoiseLite.new()
@@ -49,12 +61,15 @@ func build(seed_value: int) -> void:
 	_noise.seed = seed_value
 	_noise.frequency = 0.0032
 	_noise.fractal_octaves = 3
+	_gust_noise.seed = seed_value + 7
+	_gust_noise.frequency = 1.0
 	_forest_noise.seed = seed_value + 99
 	_forest_noise.frequency = 0.008
 	_river_phase = _rng.randf_range(0.0, TAU)
 	wind_sign = 1.0 if _rng.randf() < 0.5 else -1.0
 	_place_villages()
 	_place_mountains()
+	_place_rotors()
 	_build_ground()
 	_build_settlements()
 	_build_trees()
@@ -62,9 +77,15 @@ func build(seed_value: int) -> void:
 	_build_clouds()
 
 
+func _process(delta: float) -> void:
+	time += delta
+
+
 # --- Queries -----------------------------------------------------------------
 
-func wind_at(p: Vector3) -> Vector3:
+# The wind here and now. `steady` leaves out gusts, rotors and thermals — for
+# instruments and anything that should not flicker.
+func wind_at(p: Vector3, steady := false) -> Vector3:
 	# Low and mid band push to opposite sides; which side flips along the route,
 	# so the altimeter arrows have to be re-read now and then. Flips sit between
 	# stops — inside a flip there is no sideways control at all.
@@ -83,7 +104,35 @@ func wind_at(p: Vector3) -> Vector3:
 	var w := low.lerp(mid, t1).lerp(high, t2).lerp(back, t3)
 	if absf(p.z) > 240.0:
 		w.z -= signf(p.z) * (absf(p.z) - 240.0) * 0.08
-	return w
+	if steady:
+		return w
+	return w + gust_at(p, t1, t2)
+
+
+# Gusts: slow noise over place and time with a band-dependent amplitude, plus
+# the rotors and the thermals, which only live in the low band.
+func gust_at(p: Vector3, t1: float, t2: float) -> Vector3:
+	var amp := lerpf(lerpf(GUST_LOW, GUST_MID, t1), GUST_HIGH, t2)
+	# ~50 m features that turn over every few seconds.
+	var gx := _gust_noise.get_noise_3d(p.x * 0.02, p.z * 0.02, time * 0.25)
+	var gz := _gust_noise.get_noise_3d(p.x * 0.02 + 300.0, p.z * 0.02, time * 0.25 + 77.0)
+	var gy := _gust_noise.get_noise_3d(p.x * 0.03 + 900.0, p.z * 0.03, time * 0.35)
+	# Simplex noise sits mostly within ±0.5.
+	var g := Vector3(gx, gy * 0.35, gz) * amp * 2.2
+	var low_only := 1.0 - t1
+	if low_only <= 0.0:
+		return g
+	for r in rotors:
+		var rel: Vector2 = Vector2(p.x, p.z) - r.pos
+		var d: float = rel.length() / r.radius
+		if d < 3.0 and d > 0.001:
+			var tangent: Vector2 = Vector2(-rel.y, rel.x) / rel.length()
+			var swirl: float = ROTOR_STRENGTH * r.sign * d * exp(0.5 - 0.5 * d * d)
+			g += Vector3(tangent.x, 0.0, tangent.y) * swirl * low_only
+	for v in villages:
+		var d2 := Vector2(p.x - v.pos.x, p.z - v.pos.z).length_squared()
+		g.y += 2.5 * exp(-d2 / 3600.0) * low_only
+	return g
 
 
 func land_height(x: float, z: float) -> float:
@@ -204,6 +253,21 @@ func _place_mountains() -> void:
 				"radius": radius * _rng.randf_range(0.45, 0.65),
 				"height": height * _rng.randf_range(0.35, 0.6),
 			})
+
+
+# One rotor in the lee (east) of every massif, alternating spin. Close enough
+# to the route that the approach to the next village runs through it.
+func _place_rotors() -> void:
+	var sign := 1.0
+	for c in cones:
+		if c.height < 100.0:
+			continue
+		rotors.append({
+			"pos": c.pos + Vector2(c.radius * 1.5, _rng.randf_range(-0.3, 0.3) * c.radius),
+			"radius": c.radius * 0.9,
+			"sign": sign,
+		})
+		sign = -sign
 
 
 # --- Meshes ------------------------------------------------------------------
