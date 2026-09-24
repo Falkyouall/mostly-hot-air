@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>Mostly Hot Air — Tile-Laying Alpha</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; padding: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #1e2a3a;
+      color: #e8e8e8;
+      user-select: none;
+    }
+    canvas { display: block; }
+    #hud {
+      position: absolute;
+      top: 12px; left: 12px;
+      background: rgba(0,0,0,0.55);
+      padding: 10px 14px;
+      border-radius: 6px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    #hud .title { font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; opacity: 0.8; margin-bottom: 4px; }
+    #hud .row { display: flex; gap: 10px; }
+    #hud .label { opacity: 0.65; min-width: 85px; }
+    #prompt {
+      position: absolute;
+      bottom: 12px; left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0,0,0,0.55);
+      padding: 8px 14px;
+      border-radius: 6px;
+      font-size: 12px;
+      letter-spacing: 0.03em;
+    }
+    #prompt kbd {
+      background: rgba(255,255,255,0.15);
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: monospace;
+    }
+    #banner {
+      position: absolute;
+      top: 40%; left: 50%;
+      transform: translate(-50%, -50%);
+      padding: 24px 40px;
+      border-radius: 10px;
+      font-size: 26px;
+      font-weight: 700;
+      display: none;
+      letter-spacing: 0.05em;
+      text-align: center;
+    }
+    #banner.win {
+      display: block;
+      background: rgba(40, 140, 70, 0.9);
+      box-shadow: 0 0 40px rgba(40, 140, 70, 0.5);
+    }
+    #banner.fail {
+      display: block;
+      background: rgba(180, 50, 50, 0.9);
+      box-shadow: 0 0 40px rgba(180, 50, 50, 0.5);
+    }
+    #banner .sub { font-size: 14px; font-weight: 400; opacity: 0.85; margin-top: 8px; letter-spacing: 0.02em; }
+  </style>
+</head>
+<body>
+
+<canvas id="game"></canvas>
+
+<div id="hud">
+  <div class="title">Mostly Hot Air — Ceta</div>
+  <div class="row"><span class="label">Tiles gelegt</span><span id="placed">0</span></div>
+  <div class="row"><span class="label">Brenner</span><span id="burner">aus</span></div>
+  <div class="row"><span class="label">Status</span><span id="status">bereit</span></div>
+</div>
+
+<div id="prompt">
+  <kbd>Linksklick</kbd> legt Tile · <kbd>Leertaste</kbd> hält Brenner · <kbd>R</kbd> reset
+</div>
+
+<div id="banner"></div>
+
+<script>
+  // ============================================================
+  // CONFIG
+  // ============================================================
+  const CELL = 96;
+  const GRID_W = 11;
+  const GRID_H = 7;
+  const OFFSET_X = 60;
+  const OFFSET_Y = 80;
+
+  const BASE_SPEED = CELL / 10;     // px/s — 10 s per cell
+  const BURNER_MULT = 2.0;
+
+  const HAND_SIZE = 3;
+  const QUEUE_SIZE = 3;
+
+  const START = { x: 1, y: 3, dir: 'E' };
+  const GOAL  = { x: 9, y: 3 };
+
+  const DIRS = {
+    N: { dx:  0, dy: -1, angle: -Math.PI / 2 },
+    E: { dx:  1, dy:  0, angle:  0           },
+    S: { dx:  0, dy:  1, angle:  Math.PI / 2 },
+    W: { dx: -1, dy:  0, angle:  Math.PI     },
+  };
+  const DIR_KEYS = Object.keys(DIRS);
+
+  const UI_Y = OFFSET_Y + GRID_H * CELL + 24;
+  const HAND_BOX = 72;
+
+  // ============================================================
+  // CANVAS
+  // ============================================================
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  function resize() {
+    canvas.width = window.innerWidth;
+    canvas.height = window.innerHeight;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ============================================================
+  // STATE
+  // ============================================================
+  let grid, balloon, hand, queue, burnerDown, placedCount, runState, mouseCell;
+
+  const randDir = () => DIR_KEYS[Math.floor(Math.random() * DIR_KEYS.length)];
+
+  function reset() {
+    grid = Array.from({ length: GRID_H }, () => Array(GRID_W).fill(null));
+    grid[START.y][START.x] = START.dir;
+
+    balloon = {
+      px: START.x * CELL + CELL / 2,
+      py: START.y * CELL + CELL / 2,
+      dir: START.dir,
+    };
+
+    hand  = Array.from({ length: HAND_SIZE  }, randDir);
+    queue = Array.from({ length: QUEUE_SIZE }, randDir);
+
+    burnerDown = false;
+    placedCount = 0;
+    runState = 'playing';
+    mouseCell = null;
+
+    document.getElementById('banner').className = '';
+    document.getElementById('banner').innerHTML = '';
+    updateHud();
+  }
+
+  // ============================================================
+  // GRID HELPERS
+  // ============================================================
+  const cellAt = (px, py) => ({ x: Math.floor(px / CELL), y: Math.floor(py / CELL) });
+  const inBounds = (cx, cy) => cx >= 0 && cx < GRID_W && cy >= 0 && cy < GRID_H;
+  const isGoal = (cx, cy) => cx === GOAL.x && cy === GOAL.y;
+
+  // Placeable if: in bounds, empty, not goal, adjacent to balloon cell OR any existing tile.
+  function isPlaceable(cx, cy) {
+    if (!inBounds(cx, cy)) return false;
+    if (grid[cy][cx] !== null) return false;
+    if (isGoal(cx, cy)) return false;
+
+    const bc = cellAt(balloon.px, balloon.py);
+    const neigh = [ [1,0], [-1,0], [0,1], [0,-1] ];
+    for (const [dx, dy] of neigh) {
+      const nx = cx + dx, ny = cy + dy;
+      if (nx === bc.x && ny === bc.y) return true;
+      if (inBounds(nx, ny) && grid[ny][nx] !== null) return true;
+    }
+    return false;
+  }
+
+  // ============================================================
+  // LOOP
+  // ============================================================
+  let lastT = performance.now();
+  function tick(now) {
+    const dt = Math.min(0.05, (now - lastT) / 1000);
+    lastT = now;
+    if (runState === 'playing') update(dt);
+    draw();
+    requestAnimationFrame(tick);
+  }
+
+  function update(dt) {
+    const bc = cellAt(balloon.px, balloon.py);
+
+    if (!inBounds(bc.x, bc.y)) return fail('Ballon aus der Karte abgetrieben');
+    if (isGoal(bc.x, bc.y))    return win();
+
+    const tile = grid[bc.y][bc.x];
+    if (tile === null) return fail('Leere Zelle — Ballon abgestürzt');
+
+    const cx = bc.x * CELL + CELL / 2;
+    const cy = bc.y * CELL + CELL / 2;
+
+    const curDir = DIRS[balloon.dir];
+    const speed = burnerDown ? BASE_SPEED * BURNER_MULT : BASE_SPEED;
+    const move = speed * dt;
+
+    const beforeX = balloon.px;
+    const beforeY = balloon.py;
+
+    balloon.px += curDir.dx * move;
+    balloon.py += curDir.dy * move;
+
+    // direction change only when balloon passes the cell center
+    let crossedCenter = false;
+    if (curDir.dx !== 0) {
+      crossedCenter = (beforeX - cx) * (balloon.px - cx) <= 0;
+    } else if (curDir.dy !== 0) {
+      crossedCenter = (beforeY - cy) * (balloon.py - cy) <= 0;
+    }
+    if (crossedCenter && balloon.dir !== tile) {
+      balloon.px = cx;
+      balloon.py = cy;
+      balloon.dir = tile;
+    }
+  }
+
+  function win() {
+    runState = 'won';
+    const b = document.getElementById('banner');
+    b.className = 'win';
+    b.innerHTML = 'Ziel erreicht<div class="sub">R drücken für neuen Versuch</div>';
+    updateHud();
+  }
+  function fail(reason) {
+    runState = 'crashed';
+    const b = document.getElementById('banner');
+    b.className = 'fail';
+    b.innerHTML = reason + '<div class="sub">R drücken für neuen Versuch</div>';
+    updateHud();
+  }
+
+  // ============================================================
+  // DRAW
+  // ============================================================
+  function draw() {
+    ctx.fillStyle = '#1e2a3a';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    ctx.save();
+    ctx.translate(OFFSET_X, OFFSET_Y);
+    drawGrid();
+    drawTiles();
+    drawGoal();
+    drawBalloon();
+    ctx.restore();
+
+    drawHand();
+    drawQueue();
+  }
+
+  function drawGrid() {
+    for (let y = 0; y < GRID_H; y++) {
+      for (let x = 0; x < GRID_W; x++) {
+        const px = x * CELL, py = y * CELL;
+        const placeable = runState === 'playing' && isPlaceable(x, y);
+        const hovered = mouseCell && mouseCell.x === x && mouseCell.y === y;
+
+        ctx.fillStyle =
+          placeable && hovered ? '#3e5e82' :
+          placeable            ? '#324a66' :
+                                 '#273547';
+        ctx.fillRect(px, py, CELL, CELL);
+
+        ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+        ctx.lineWidth = 1;
+        ctx.strokeRect(px + 0.5, py + 0.5, CELL - 1, CELL - 1);
+      }
+    }
+  }
+
+  function drawTiles() {
+    for (let y = 0; y < GRID_H; y++) {
+      for (let x = 0; x < GRID_W; x++) {
+        const d = grid[y][x];
+        if (!d) continue;
+        const px = x * CELL, py = y * CELL;
+        ctx.fillStyle = '#5d8faf';
+        ctx.fillRect(px + 4, py + 4, CELL - 8, CELL - 8);
+        drawArrow(px + CELL / 2, py + CELL / 2, DIRS[d].angle, CELL * 0.35, '#fff');
+      }
+    }
+  }
+
+  function drawGoal() {
+    const px = GOAL.x * CELL, py = GOAL.y * CELL;
+    const cx = px + CELL / 2, cy = py + CELL / 2;
+    ctx.fillStyle = '#ffe66a';
+    ctx.fillRect(px + 6, py + 6, CELL - 12, CELL - 12);
+    ctx.fillStyle = '#2a2a2a';
+    ctx.fillRect(cx - 1, cy - 18, 2, 36);
+    ctx.fillStyle = '#d6312e';
+    ctx.beginPath();
+    ctx.moveTo(cx + 1, cy - 18);
+    ctx.lineTo(cx + 18, cy - 10);
+    ctx.lineTo(cx + 1, cy - 2);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  function drawBalloon() {
+    const cx = balloon.px, cy = balloon.py;
+    ctx.fillStyle = 'rgba(0,0,0,0.25)';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + 10, 14, 5, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#8b5a2b';
+    ctx.fillRect(cx - 6, cy + 2, 12, 8);
+    ctx.fillStyle = burnerDown ? '#ff7533' : '#e84a4a';
+    ctx.beginPath();
+    ctx.arc(cx, cy - 6, 14, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.fillStyle = '#ffe66a';
+    ctx.fillRect(cx - 14, cy - 8, 28, 3);
+    ctx.strokeStyle = '#333';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - 10, cy - 1); ctx.lineTo(cx - 5, cy + 2);
+    ctx.moveTo(cx + 10, cy - 1); ctx.lineTo(cx + 5, cy + 2);
+    ctx.stroke();
+  }
+
+  function drawArrow(cx, cy, angle, len, color) {
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(angle);
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = 4;
+    ctx.lineCap = 'round';
+    ctx.beginPath();
+    ctx.moveTo(-len, 0);
+    ctx.lineTo(len * 0.55, 0);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(len, 0);
+    ctx.lineTo(len * 0.45, -len * 0.45);
+    ctx.lineTo(len * 0.45,  len * 0.45);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
+  }
+
+  function drawHand() {
+    const labelX = 60;
+    ctx.fillStyle = 'rgba(255,255,255,0.5)';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('HAND (Linksklick legt oberste Kachel)', labelX, UI_Y - 8);
+
+    for (let i = 0; i < hand.length; i++) {
+      const px = labelX + i * (HAND_BOX + 12);
+      const py = UI_Y;
+      ctx.fillStyle = i === 0 ? '#5d8faf' : '#3a4a5e';
+      ctx.fillRect(px, py, HAND_BOX, HAND_BOX);
+      ctx.strokeStyle = i === 0 ? '#ffe66a' : 'rgba(255,255,255,0.15)';
+      ctx.lineWidth = i === 0 ? 3 : 1;
+      ctx.strokeRect(px + 0.5, py + 0.5, HAND_BOX - 1, HAND_BOX - 1);
+      drawArrow(px + HAND_BOX / 2, py + HAND_BOX / 2, DIRS[hand[i]].angle, HAND_BOX * 0.28, '#fff');
+    }
+  }
+
+  function drawQueue() {
+    const labelX = 60 + HAND_SIZE * (HAND_BOX + 12) + 40;
+    ctx.fillStyle = 'rgba(255,255,255,0.4)';
+    ctx.font = '11px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('VORSCHAU', labelX, UI_Y - 8);
+
+    const box = HAND_BOX * 0.7;
+    for (let i = 0; i < queue.length; i++) {
+      const px = labelX + i * (box + 8);
+      const py = UI_Y + (HAND_BOX - box) / 2;
+      ctx.fillStyle = '#2a3748';
+      ctx.fillRect(px, py, box, box);
+      ctx.strokeStyle = 'rgba(255,255,255,0.1)';
+      ctx.lineWidth = 1;
+      ctx.strokeRect(px + 0.5, py + 0.5, box - 1, box - 1);
+      drawArrow(px + box / 2, py + box / 2, DIRS[queue[i]].angle, box * 0.25, 'rgba(255,255,255,0.7)');
+    }
+  }
+
+  // ============================================================
+  // INPUT
+  // ============================================================
+  canvas.addEventListener('mousemove', (e) => {
+    const r = canvas.getBoundingClientRect();
+    const gx = e.clientX - r.left - OFFSET_X;
+    const gy = e.clientY - r.top  - OFFSET_Y;
+    const cx = Math.floor(gx / CELL), cy = Math.floor(gy / CELL);
+    mouseCell = inBounds(cx, cy) ? { x: cx, y: cy } : null;
+  });
+
+  canvas.addEventListener('click', (e) => {
+    if (runState !== 'playing') return;
+    const r = canvas.getBoundingClientRect();
+    const gx = e.clientX - r.left - OFFSET_X;
+    const gy = e.clientY - r.top  - OFFSET_Y;
+    const cx = Math.floor(gx / CELL), cy = Math.floor(gy / CELL);
+    if (!isPlaceable(cx, cy)) return;
+
+    grid[cy][cx] = hand[0];
+    placedCount++;
+
+    hand = hand.slice(1).concat([queue[0]]);
+    queue = queue.slice(1).concat([randDir()]);
+
+    updateHud();
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { burnerDown = true;  updateHud(); e.preventDefault(); }
+    if (e.code === 'KeyR')  reset();
+  });
+  document.addEventListener('keyup', (e) => {
+    if (e.code === 'Space') { burnerDown = false; updateHud(); }
+  });
+
+  // ============================================================
+  // HUD
+  // ============================================================
+  function updateHud() {
+    document.getElementById('placed').textContent = placedCount;
+    document.getElementById('burner').textContent = burnerDown ? 'an' : 'aus';
+    document.getElementById('status').textContent =
+      runState === 'playing' ? 'fliegt' :
+      runState === 'won'     ? 'gewonnen' : 'abgestürzt';
+  }
+
+  // ============================================================
+  // BOOT
+  // ============================================================
+  reset();
+  requestAnimationFrame(tick);
+</script>
+
+</body>
+</html>
