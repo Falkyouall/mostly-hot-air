@@ -80,7 +80,7 @@ Jede Fahrt würfelt Karte, Dorf-Lage, Berge und Windseite neu (`R`).
 
 | Eingabe | Aktion |
 |---|---|
-| Pfeiltasten / rechter Stick | **Pinne** — Richtung des Motors; bleibt stehen, wenn man loslässt oder weggeht |
+| Pfeiltasten / rechter Stick | **Pinne** — halten dreht den Motor mit 90°/s auf die gedrückte Richtung zu; loslassen lässt ihn genau dort stehen, auch beim Weggehen. So ist jeder Kurs über 360° einstellbar |
 | `E` / Pad `A` | **Gashebel** — Aus → Halbgas → Vollgas → Aus |
 | Leertaste / `RT` | **Brenner** halten = steigen |
 | Umschalt / `LT` | **Ventil** halten = sinken |

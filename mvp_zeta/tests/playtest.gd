@@ -27,7 +27,12 @@ func _ready() -> void:
 		_check("Gashebel auf Halbgas", func() -> bool: return balloon.throttle == 1 and balloon.motor_speed() > 0.0),
 		_tap(),
 		_check("Gashebel auf Vollgas", func() -> bool: return balloon.throttle == 2),
+		# Pinne turns gradually towards the held direction and stops on release.
 		_helm(Vector2(0.0, -1.0), 0.4),
+		_check("Pinne dreht schrittweise (zwischen Ost und Nord)", func() -> bool:
+			var a := rad_to_deg(balloon.thrust_dir.angle())
+			return a < -20.0 and a > -70.0),
+		_helm(Vector2(0.0, -1.0), 1.0),
 		_check("Pinne zeigt nach Norden", func() -> bool: return balloon.thrust_dir.distance_to(Vector2(0.0, -1.0)) < 0.05),
 		_remember(func() -> void: _memo = {"fuel": balloon.fuel}),
 		_walk(Vector2(0.9, -0.1)),

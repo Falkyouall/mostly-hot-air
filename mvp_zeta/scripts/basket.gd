@@ -29,6 +29,9 @@ const CANISTER_FUEL := 70.0
 const PACK_TIME := 2.5
 const SCOPE_RANGE := 280.0
 const SCOPE_SPEED := 230.0
+# Pinne turn rate at full deflection. The helm input is a target direction:
+# hold it and the motor swings towards it; let go and it stays where it is.
+const HELM_TURN_SPEED := deg_to_rad(90.0)
 
 var balloon: Node3D
 var enabled := false
@@ -347,7 +350,10 @@ func _operate(st: Dictionary, pressed: bool, held: bool, delta: float) -> void:
 				Sfx.play("lever")
 			var helm := Input.get_vector("helm_left", "helm_right", "helm_up", "helm_down")
 			if helm.length() > 0.3:
-				balloon.thrust_dir = helm.normalized()
+				var current: float = balloon.thrust_dir.angle()
+				var diff := angle_difference(current, helm.angle())
+				var step: float = HELM_TURN_SPEED * minf(helm.length(), 1.0) * delta
+				balloon.thrust_dir = Vector2.from_angle(current + clampf(diff, -step, step))
 				player.face_towards(player.position + Vector3(helm.x, 0.0, helm.y), delta)
 			balloon.burning = Input.is_action_pressed("burn")
 			balloon.venting = Input.is_action_pressed("vent")
